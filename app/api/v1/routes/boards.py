@@ -110,16 +110,18 @@ async def board_socket(ws: WebSocket, board_id: str):
     if not origin_allowed(ws) or not is_allowed(role_of(ws), 'boards.collaborate'):
         await ws.close(code=CLOSE_FORBIDDEN)  # до accept: клиент получает отказ рукопожатия
         return
-    if not _BOARD_ID.match(board_id):
-        await ws.close(code=CLOSE_NOT_FOUND)
-        return
-    try:
-        board = await run('boards.get', BoardIdDTO(board_id=board_id))
-    except NotFoundError:
-        await ws.close(code=CLOSE_NOT_FOUND)
-        return
+    board = None
+    if _BOARD_ID.match(board_id):
+        try:
+            board = await run('boards.get', BoardIdDTO(board_id=board_id))
+        except NotFoundError:
+            pass
 
+    # Браузер видит свой код закрытия только после accept; до accept он получает лишь 1006.
     await ws.accept()
+    if board is None:
+        await ws.close(code=CLOSE_NOT_FOUND, reason='board not found')
+        return
     try:
         hello = HelloMsg.model_validate_json(await asyncio.wait_for(ws.receive_text(), timeout=10))
     except (asyncio.TimeoutError, ValidationError, WebSocketDisconnect, ValueError):

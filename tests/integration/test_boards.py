@@ -112,10 +112,11 @@ def test_realtime_collaboration_and_persistence(client):
 
 
 def test_socket_rejections(client):
-    with pytest.raises(WebSocketDisconnect) as missing:
-        with client.websocket_connect('/api/v1/boards/' + 'y' * 22 + '/ws'):
-            pass
-    assert missing.value.code == 4404
+    for path in ('y' * 22, 'bad.id'):
+        with client.websocket_connect(f'/api/v1/boards/{path}/ws') as ws:
+            with pytest.raises(WebSocketDisconnect) as missing:
+                ws.receive_json()
+        assert missing.value.code == 4404
     bid = new_board(client)['id']
     with pytest.raises(WebSocketDisconnect) as foreign:
         with client.websocket_connect(f'/api/v1/boards/{bid}/ws', headers={'origin': 'https://evil.example'}):

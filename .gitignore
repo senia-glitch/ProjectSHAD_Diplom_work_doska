@@ -1,0 +1,10 @@
+.env
+.infra.env
+.core-package.env
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+quality-report*.json
+.quality/

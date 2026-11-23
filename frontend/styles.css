@@ -1,0 +1,7 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+main { max-width: 48rem; margin: 3rem auto; padding: 0 1rem; }
+form { display: grid; gap: .75rem; } input, button { padding: .65rem; font: inherit; }
+li { margin: .75rem 0; display: flex; justify-content: space-between; gap: 1rem; overflow-wrap: anywhere; }
+li span { min-width: 0; }
+li button { flex-shrink: 0; white-space: nowrap; }
+:focus-visible { outline: 3px solid #7177f8; outline-offset: 2px; }

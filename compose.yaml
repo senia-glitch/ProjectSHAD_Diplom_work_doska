@@ -1,0 +1,53 @@
+name: doska
+services:
+  db:
+    image: postgres:17@sha256:b60e90042aa6b8dbecd58e224b3e36114dbf8ad754465264c2476ad58a86e45c
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-factory}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts.configure}
+      POSTGRES_DB: ${POSTGRES_DB:-doska}
+      POSTGRES_TEST_DB: ${POSTGRES_TEST_DB:-doska_test}
+    ports:
+      - "127.0.0.1:${DB_PORT:-15442}:5432"
+    volumes:
+      - data:/var/lib/postgresql/data
+      - ./docker/init-test-db.sh:/docker-entrypoint-initdb.d/10-test-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  app:
+    build:
+      context: .
+      target: dev
+    image: doska-app:local
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      FAT_HOST: 0.0.0.0
+      FAT_PORT: "8000"
+    ports:
+      - "127.0.0.1:${APP_PORT:-18090}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+  migrate:
+    image: doska-app:local
+    profiles: ["tools"]
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+    command: ["python", "-m", "scripts.migrate", "--database", "${POSTGRES_DB:-doska}"]
+volumes:
+  data:

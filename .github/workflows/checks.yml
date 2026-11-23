@@ -1,0 +1,44 @@
+name: application-checks
+on: [push, pull_request]
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      db:
+        image: postgres:17@sha256:b60e90042aa6b8dbecd58e224b3e36114dbf8ad754465264c2476ad58a86e45c
+        env:
+          POSTGRES_USER: factory
+          POSTGRES_PASSWORD: isolated-ci-only
+          POSTGRES_DB: doska
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U factory -d doska"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: isolated-ci-only
+      POSTGRES_DB: doska
+      POSTGRES_TEST_DB: doska_test
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      CORE_JWT_SECRET: temporary-ci-only-key-not-used-for-user-sessions
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: python -m pip install -r requirements-tested.txt
+      - name: Create isolated test database
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg
+          from psycopg import sql
+          with psycopg.connect(host=os.environ['DB_HOST'], port=os.environ['DB_PORT'],
+              user=os.environ['POSTGRES_USER'], password=os.environ['POSTGRES_PASSWORD'],
+              dbname=os.environ['POSTGRES_DB'], autocommit=True) as connection:
+              connection.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(os.environ['POSTGRES_TEST_DB'])))
+          PY
+      - run: python -m scripts.check
+      - run: python -m scripts.check --integration --database doska_test

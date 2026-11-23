@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+!.env.example
+!.env.fastbase
+.infra.env
+.core-package.env
+.venv
+venv
+**/__pycache__
+.pytest_cache
+quality-report*.json
+.quality

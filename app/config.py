@@ -33,3 +33,30 @@ def database_url(*, test=None, asynchronous=False):
                       username=os.getenv('POSTGRES_USER', 'factory'), password=password,
                       host=os.getenv('DB_HOST', '127.0.0.1'), port=int(os.getenv('DB_PORT', '5433')),
                       database=name)
+
+
+def _int_env(name, default, low, high):
+    raw = os.getenv(name, '').strip()
+    value = int(raw) if raw else default
+    if not low <= value <= high:
+        raise ValueError(f'{name} must be in [{low}, {high}]')
+    return value
+
+
+class BoardSettings:
+    """Ограничения совместной доски. Значения читаются из окружения/.env при старте."""
+
+    def __init__(self):
+        self.max_peers = _int_env('BOARD_MAX_PEERS', 50, 1, 1000)
+        self.max_strokes = _int_env('BOARD_MAX_STROKES', 20000, 1, 1_000_000)
+        self.messages_per_second = _int_env('BOARD_MESSAGES_PER_SECOND', 60, 1, 10000)
+        self.max_message_bytes = _int_env('BOARD_MAX_MESSAGE_BYTES', 262144, 1024, 16 * 1024 * 1024)
+        self.creates_per_minute = _int_env('BOARD_CREATES_PER_MINUTE', 20, 1, 10000)
+        self.send_queue = _int_env('BOARD_SEND_QUEUE', 2000, 16, 100000)
+        # Разрешённые Origin для WebSocket через запятую (https://board.example.com).
+        # Пусто — допускается только тот же хост, что в заголовке Host (тот же сайт).
+        self.allowed_origins = {o.strip().rstrip('/').lower()
+                                for o in os.getenv('BOARD_ALLOWED_ORIGINS', '').split(',') if o.strip()}
+
+
+board_settings = BoardSettings()

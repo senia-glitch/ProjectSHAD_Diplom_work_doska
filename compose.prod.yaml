@@ -1,0 +1,18 @@
+# Сервер в интернете: docker compose -f compose.yaml -f compose.prod.yaml ...
+# Приложение слушает только 127.0.0.1:${APP_PORT}; наружу его отдаёт nginx с HTTPS (deploy/nginx.conf).
+services:
+  db:
+    restart: unless-stopped
+  app:
+    build:
+      context: .
+      target: runtime
+    image: doska-app:prod
+    restart: unless-stopped
+    environment:
+      # Порт приложения доступен только с хоста, единственный клиент — nginx.
+      # Доверяем его X-Forwarded-For, чтобы лимиты считались по реальному адресу посетителя.
+      FORWARDED_ALLOW_IPS: "*"
+      FAT_LOG_LEVEL: info
+  migrate:
+    image: doska-app:prod

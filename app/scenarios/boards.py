@@ -69,7 +69,7 @@ class StrokeData(BaseModel):
     """Содержимое штриха без ключа. pts — плоский список [x0, y0, x1, y1, ...]."""
     tool: Tool
     color: str = Field(pattern=r'^#[0-9a-fA-F]{6}$')
-    width: int = Field(ge=1, le=96)
+    width: int = Field(ge=1, le=500)  # единый размер инструмента: ползунок 1–500
     pts: list[float] = Field(min_length=2, max_length=8000)
 
     @field_validator('pts')

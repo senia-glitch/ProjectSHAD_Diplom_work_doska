@@ -33,7 +33,9 @@ def test_rate_limiters():
 def test_stroke_validation():
     ok = StrokeDTO(id='abcdefgh', tool='pen', color='#AABBCC', width=3, pts=[1.234, 2, 3, 4])
     assert ok.pts == [1.2, 2, 3, 4] and ok.color == '#aabbcc'
-    for bad in ({'pts': [1, 2, 3]}, {'pts': [float('inf'), 0]}, {'tool': 'bomb'}, {'color': 'red'}, {'width': 0}):
+    assert StrokeDTO(id='abcdefgh', tool='eraser', color='#000000', width=500, pts=[0, 0]).width == 500
+    for bad in ({'pts': [1, 2, 3]}, {'pts': [float('inf'), 0]}, {'tool': 'bomb'}, {'color': 'red'}, {'width': 0},
+                {'width': 501}):
         with pytest.raises(ValueError):
             StrokeDTO(**{'id': 'abcdefgh', 'tool': 'pen', 'color': '#000000', 'width': 3, 'pts': [0, 0], **bad})
 

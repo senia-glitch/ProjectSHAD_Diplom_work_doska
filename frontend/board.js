@@ -4,8 +4,13 @@
 
 const BOARD_ID = decodeURIComponent(location.pathname.split("/")[2] || "");
 const PAPER = "#fbfcfe";
-const COLORS = ["#1f2430", "#e5484d", "#f76b15", "#e5a000", "#30a46c", "#0090ff", "#7177f8", "#d6409f"];
-const WIDTHS = [2, 4, 8, 16];
+// 7 готовых цветов + свой цвет = 8 кружков.
+const COLORS = ["#1f2430", "#e5484d", "#f76b15", "#30a46c", "#0090ff", "#7177f8", "#d6409f"];
+// Единый размер для всех инструментов; ползунок логарифмический: точная подстройка тонких линий.
+const SIZE_MIN = 1, SIZE_MAX = 500, SLIDER_STEPS = 1000;
+const clampSize = (w) => Math.min(SIZE_MAX, Math.max(SIZE_MIN, Math.round(Number(w)) || SIZE_MIN));
+const sizeToSlider = (w) => Math.round(Math.log(w / SIZE_MIN) / Math.log(SIZE_MAX / SIZE_MIN) * SLIDER_STEPS);
+const sliderToSize = (v) => clampSize(SIZE_MIN * (SIZE_MAX / SIZE_MIN) ** (v / SLIDER_STEPS));
 const TOOLS = [
   { id: "pen", icon: "pen", tip: "Карандаш (P)", key: "p" },
   { id: "line", icon: "line", tip: "Линия (L)", key: "l" },
@@ -27,7 +32,7 @@ const cctx = committed.getContext("2d");
 const state = {
   tool: store.get("tool", "pen"),
   color: store.get("color", COLORS[0]),
-  width: store.get("width", 4),
+  width: clampSize(store.get("width", 4)),
   view: { x: 0, y: 0, scale: 1 },
   dpr: 1,
   strokes: [],                 // подтверждённые и собственные отправленные, в порядке сервера
@@ -56,7 +61,7 @@ if (!TOOLS.some((t) => t.id === state.tool)) state.tool = "pen";
 const toolbar = $("toolbar");
 const toolButtons = new Map();
 const colorButtons = new Map();
-const widthButtons = new Map();
+let sizeRange, sizeInput, sizeDot;
 
 function buildToolbar() {
   const tools = el("div", { class: "tb-group" });
@@ -78,14 +83,24 @@ function buildToolbar() {
   custom.addEventListener("input", () => setColor(custom.value));
   colors.append(el("label", { class: "swatch swatch-picker", "data-tip": "Свой цвет", "data-tip-pos": "right" }, custom));
 
-  const widths = el("div", { class: "tb-group", role: "group", "aria-label": "Толщина" });
-  for (const w of WIDTHS) {
-    const b = el("button", { type: "button", class: "ibtn width-btn", "aria-label": "Толщина " + w, "data-tip": "Толщина " + w,
-      "data-tip-pos": "right", onclick: () => setWidth(w) }, el("span", { class: "width-dot" }));
-    b.firstChild.style.setProperty("--w", Math.min(w, 14) + "px");
-    widthButtons.set(w, b);
-    widths.append(b);
-  }
+  sizeDot = el("span", { class: "size-dot" });
+  sizeRange = el("input", { type: "range", class: "size-range", min: 0, max: SLIDER_STEPS, step: 1,
+    "aria-label": "Размер инструмента" });
+  sizeRange.addEventListener("input", () => setWidth(sliderToSize(sizeRange.value)));
+  sizeInput = el("input", { type: "number", class: "size-input", min: SIZE_MIN, max: SIZE_MAX, step: 1,
+    inputmode: "numeric", "aria-label": `Размер инструмента, от ${SIZE_MIN} до ${SIZE_MAX}` });
+  const applyInput = () => {
+    if (sizeInput.value.trim() === "") { syncToolbar(); return; }
+    setWidth(clampSize(sizeInput.value));
+  };
+  sizeInput.addEventListener("change", applyInput);
+  sizeInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); applyInput(); sizeInput.blur(); }
+    else if (e.key === "Escape") { syncToolbar(); sizeInput.blur(); }
+  });
+  const widths = el("div", { class: "tb-group tb-size", role: "group", "aria-label": "Размер" },
+    el("span", { class: "size-preview", "data-tip": "Размер: [ и ] на клавиатуре", "data-tip-pos": "right" }, sizeDot),
+    sizeRange, sizeInput);
   const actions = el("div", { class: "tb-group" },
     ibtn({ icon: "undo", tip: "Отменить (Ctrl+Z)", tipPos: "right", id: "undo-btn", onclick: undo }),
     ibtn({ icon: "redo", tip: "Повторить (Ctrl+Shift+Z)", tipPos: "right", id: "redo-btn", onclick: redo }),
@@ -98,7 +113,12 @@ function buildToolbar() {
 function syncToolbar() {
   for (const [id, b] of toolButtons) { b.classList.toggle("on", id === state.tool); b.setAttribute("aria-pressed", String(id === state.tool)); }
   for (const [c, b] of colorButtons) b.setAttribute("aria-pressed", String(c === state.color));
-  for (const [w, b] of widthButtons) { b.classList.toggle("on", w === state.width); b.setAttribute("aria-pressed", String(w === state.width)); }
+  sizeRange.value = sizeToSlider(state.width);
+  sizeRange.setAttribute("aria-valuetext", state.width + " пикс.");
+  if (document.activeElement !== sizeInput) sizeInput.value = state.width;
+  // Превью: до 28 пикселей в реальном размере, крупнее — кружок 28 и число в поле.
+  sizeDot.style.setProperty("--d", Math.max(2, Math.min(28, state.width)) + "px");
+  sizeDot.classList.toggle("eraser", state.tool === "eraser");
   toolbar.style.setProperty("--current", state.color);
   stage.dataset.tool = state.tool;
   $("undo-btn").disabled = !state.history.some((id) => state.index.has(id));
@@ -107,7 +127,7 @@ function syncToolbar() {
 
 function setTool(t) { state.tool = t; store.set("tool", t); syncToolbar(); }
 function setColor(c) { state.color = c.toLowerCase(); store.set("color", state.color); if (state.tool === "eraser" || state.tool === "hand") state.tool = "pen"; syncToolbar(); }
-function setWidth(w) { state.width = w; store.set("width", w); syncToolbar(); }
+function setWidth(w) { state.width = clampSize(w); store.set("width", state.width); syncToolbar(); }
 
 /* Участники в шапке */
 function initials(name) { return (name || "?").trim().slice(0, 1).toUpperCase() || "?"; }
@@ -401,7 +421,7 @@ canvas.addEventListener("pointerdown", (e) => {
   const p = toWorld(e.clientX, e.clientY);
   const tool = state.tool;
   state.mine = { id: randomKey(), tool, color: tool === "eraser" ? "#000000" : state.color,
-    width: tool === "eraser" ? Math.max(12, state.width * 3) : state.width,
+    width: state.width,
     pts: tool === "pen" || tool === "eraser" ? [round1(p.x), round1(p.y)] : [round1(p.x), round1(p.y), round1(p.x), round1(p.y)] };
   gesture = { type: "draw", shift: e.shiftKey };
   invalidate();
@@ -615,6 +635,8 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "+" || e.key === "=") zoomCenter(1.25);
   else if (e.key === "-" || e.key === "_") zoomCenter(1 / 1.25);
   else if (e.key === "0") resetView();
+  else if (e.key === "[" || e.code === "BracketLeft") setWidth(Math.min(state.width - 1, state.width / 1.25));
+  else if (e.key === "]" || e.code === "BracketRight") setWidth(Math.max(state.width + 1, state.width * 1.25));
   else if (e.code === "KeyF") fitToContent();
 });
 document.addEventListener("keyup", (e) => {

@@ -293,6 +293,9 @@ p.hint { margin: 0; line-height: 1.5; }
 .saved-state { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .saved-state.pending { color: var(--amber); }
 .avatar.creator { box-shadow: 0 0 0 2px var(--amber); }
+.avatar.kickable { cursor: pointer; }
+.avatar.kickable:hover { box-shadow: 0 0 0 2px var(--danger); }
+.dialog-section { display: grid; gap: 12px; padding-top: 16px; border-top: 1px solid var(--line); }
 .code-value { font: 600 16px ui-monospace, "Cascadia Mono", Consolas, monospace !important; letter-spacing: .12em; }
 .chat-meter { font: 500 12px var(--sans); color: var(--muted); padding: 2px 8px; border-radius: 999px; background: var(--surface-2); font-variant-numeric: tabular-nums; }
 .chat-meter[data-level="amber"] { color: var(--amber); background: var(--amber-soft); }

@@ -140,13 +140,27 @@ function renderPeers() {
   for (const [id, p] of state.peers) list.push({ id, ...p });
   const shown = list.slice(0, 6);
   box.replaceChildren(...shown.map((p) => {
-    const label = (p.self ? `${p.name} (вы) — изменить имя` : p.name) + (p.creator ? " · создатель доски" : "");
-    const node = el(p.self ? "button" : "span", { class: "avatar" + (p.self ? " self" : "") + (p.creator ? " creator" : ""), "data-tip": label,
-      "aria-label": label, type: p.self ? "button" : null, onclick: p.self ? askName : null, text: initials(p.name) });
+    const kickable = !p.self && isCreator();
+    const label = (p.self ? `${p.name} (вы) — изменить имя` : kickable ? `${p.name} — исключить` : p.name) +
+      (p.creator ? " · создатель доски" : "");
+    const clickable = p.self || kickable;
+    const node = el(clickable ? "button" : "span", { class: "avatar" + (p.self ? " self" : "") + (p.creator ? " creator" : "") +
+      (kickable ? " kickable" : ""), "data-tip": label, "aria-label": label, type: clickable ? "button" : null,
+      onclick: p.self ? askName : kickable ? () => askKick(p.id, p.name) : null, text: initials(p.name) });
     node.style.setProperty("--peer", p.color);
     return node;
   }), ...(list.length > shown.length ? [el("span", { class: "avatar more", text: "+" + (list.length - shown.length),
     "data-tip": list.slice(6).map((p) => p.name).join(", ") })] : []));
+}
+
+function isCreator() { return Boolean(state.me && state.me.creator); }
+
+function askKick(id, name) {
+  const dlg = $("kick-dialog");
+  $("kick-name").textContent = name;
+  dlg.returnValue = "";
+  dlg.showModal();
+  dlg.addEventListener("close", () => { if (dlg.returnValue === "kick") send({ t: "kick", id }); }, { once: true });
 }
 
 /* Индикаторы: участники N/15, заполненность доски, сохранение */
@@ -888,14 +902,15 @@ function askClear() {
 }
 
 /* Диалог входа: имя и код. При переименовании поле кода скрыто. */
-function askJoin(error = "", wait = 0) {
+function askJoin(error = "", wait = 0, needCode = false) {
   const dlg = $("name-dialog");
   const joining = !state.me;
+  askJoin.needCode = joining && needCode;
   $("name-dialog-title").textContent = joining ? "Вход на доску" : "Как вас подписать?";
-  $("code-field").hidden = !joining;
+  $("code-field").hidden = !joining || !needCode;
   $("name-input").value = store.get("name", "") || "";
   $("code-input").value = joining ? (state.code || "") : "";
-  $("code-input").required = joining;
+  $("code-input").required = joining && needCode;
   const err = $("join-error");
   err.textContent = error;
   err.hidden = !error;
@@ -914,7 +929,7 @@ function askJoin(error = "", wait = 0) {
     askJoin.timer = setInterval(tick, 1000);
   }
   if (!dlg.open) dlg.showModal();
-  (joining && store.get("name") ? $("code-input") : $("name-input")).focus();
+  (joining && needCode && store.get("name") ? $("code-input") : $("name-input")).focus();
 }
 const askName = () => askJoin();
 
@@ -923,24 +938,37 @@ $("name-form").addEventListener("submit", (e) => {
   store.set("name", name);
   if (state.me) { state.me.name = name; renderPeers(); send({ t: "rename", name }); return; }
   const code = $("code-input").value.trim();
-  if (!code) { e.preventDefault(); $("code-input").focus(); return; }
-  state.code = code;
+  if (askJoin.needCode && !code) { e.preventDefault(); $("code-input").focus(); return; }
+  if (askJoin.needCode) state.code = code;
   attempt = 0;
   connect();
 });
 $("name-dialog").addEventListener("cancel", (e) => { if (!state.me) e.preventDefault(); });
 
+function renderInvite() {
+  $("invite-site").value = location.origin;
+  $("invite-code").value = state.code || "";
+  $("invite-unknown").hidden = Boolean(state.code);
+  $("invite-copy").disabled = !state.code;
+}
 $("invite-btn").addEventListener("click", () => {
-  const link = location.origin + "/b/" + BOARD_ID;
-  $("invite-link").value = link;
-  $("invite-code").value = state.code;
+  if (!isCreator()) return;
+  renderInvite();
+  $("new-code-input").value = "";
   $("invite-dialog").showModal();
-  $("invite-link").select();
 });
 $("invite-copy").addEventListener("click", async () => {
-  const ok = await copyText(`Доска: ${$("invite-link").value}\nКод входа: ${state.code}`);
-  toast(ok ? "Ссылка скопирована" : "Скопируйте ссылку вручную", ok ? "ok" : "error");
+  const title = $("board-title").textContent;
+  const ok = await copyText(`Доска «${title}»: откройте ${location.origin} и введите код ${state.code}`);
+  toast(ok ? "Приглашение скопировано" : "Скопируйте код вручную", ok ? "ok" : "error");
   if (ok) $("invite-dialog").close();
+});
+$("change-code").addEventListener("click", () => {
+  const code = $("new-code-input").value.trim();
+  send({ t: "setcode", code: code || null });
+});
+$("new-code-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); $("change-code").click(); }
 });
 
 /* ------------------------------------------------------------ сеть */
@@ -986,12 +1014,18 @@ function connect() {
     renderPeers();
     invalidate();
     if (e.code === 4404) return showMessage("Доска не найдена", "Ссылка неверна, или на доску давно не заходили и она удалена.");
+    if (e.code === 4410) {
+      forgetCode(BOARD_ID);
+      return showMessage("Вы исключены из доски", "Создатель доски исключил вас. Войти снова нельзя.");
+    }
     if (e.code === 4401 || e.code === 4408) {
       setStatus("Нужен код", "amber");
+      const tried = Boolean(state.code);
       if (e.code === 4401) { forgetCode(BOARD_ID); state.code = ""; }
       const wait = e.code === 4408 ? Number((e.reason || "").split(":")[1]) || 60 : 0;
       state.me = null;
-      return askJoin(e.code === 4401 ? "Неверный код доски" : "", wait);
+      return askJoin(e.code === 4401 ? (tried ? "Неверный код: возможно, создатель его сменил" : "Введите код доски") : "",
+        wait, true);
     }
     if (e.code === 4403) return showMessage("Доступ запрещён", "Сервер отклонил подключение с этого адреса.");
     const delay = e.code === 4429 ? 10000 : Math.min(10000, 500 * 2 ** attempt) + Math.random() * 400;
@@ -1064,6 +1098,16 @@ function handle(msg) {
       appendChat(msg.message);
       markChanged();
       break;
+    case "code":
+      state.code = msg.code;
+      rememberCode(BOARD_ID, msg.code);
+      $("new-code-input").value = "";
+      renderInvite();
+      toast(msg.kicked ? `Участник «${msg.kicked}» исключён. Новый код: ${msg.code}` : `Код доски изменён: ${msg.code}`, "ok");
+      break;
+    case "kicked":
+      if (!isCreator()) toast(`Участник «${msg.name}» исключён создателем доски`);  // создателю — своё уведомление
+      break;
     case "saved":
       state.savedAt = msg.at;
       state.unsaved = false;
@@ -1100,6 +1144,7 @@ function onInit(msg) {
   state.unsaved = false;
   rememberCode(BOARD_ID, state.code);
   if ($("name-dialog").open) $("name-dialog").close();
+  $("invite-btn").hidden = !state.me.creator;   // приглашает только создатель
 
   renderChat(msg.chat || []);
 
@@ -1127,6 +1172,7 @@ function onInit(msg) {
   $("bar-actions").append(themeButton());
   fileBtn.append(icon("file"));
   $("invite-btn").prepend(icon("users"));
+  $("invite-btn").hidden = true;
   setInterval(renderSaved, 30000);
   if (store.get("chatOpen", false)) setChat(true);
   buildToolbar();
@@ -1137,5 +1183,6 @@ function onInit(msg) {
   window.addEventListener("online", () => { if (!state.ready) { attempt = 0; connect(); } });
   document.addEventListener("visibilitychange", () => { if (!document.hidden && !state.ready && !fatal) { attempt = 0; connect(); } });
   state.code = knownCode(BOARD_ID);
-  if (store.get("name") && state.code) connect(); else askJoin();
+  // Создатель и участник, уже входивший с этого устройства, входят без кода.
+  if (store.get("name")) connect(); else askJoin();
 })();

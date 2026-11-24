@@ -17,20 +17,21 @@ from app.access import is_allowed, require, role_of
 from app.config import board_settings as cfg
 from app.realtime.guard import EntryGuard
 from app.realtime.hub import KeyedRateLimiter, LimitError, Peer, RateLimiter, SlowConsumer, hub
-from app.scenarios.boards import (BOARD_ID_PATTERN, CHAT_MAX_CHARS, KEY_PATTERN, AccessDTO, BoardCreated, BoardFile,
-                                  ChatTextDTO, CreateBoardDTO, StrokeDTO, author_tag)
+from app.scenarios.boards import (BOARD_ID_PATTERN, CHAT_MAX_CHARS, KEY_PATTERN, AdmitDTO, BanDTO, BoardCreated,
+                                  BoardFile, ChatTextDTO, CodeDTO, CreateBoardDTO, SetCodeDTO, StrokeDTO, author_tag)
 
 router = APIRouter(tags=['boards'])
 log = logging.getLogger('app.board')
 _create_limiter = KeyedRateLimiter(cfg.creates_per_minute)
 _import_limiter = KeyedRateLimiter(cfg.imports_per_minute)
 guard = EntryGuard(cfg.handshakes_per_minute, cfg.ip_code_failures, cfg.board_code_failures,
-                   cfg.code_failure_window, cfg.code_lock_seconds)
+                   cfg.code_failure_window, cfg.code_lock_seconds, cfg.global_code_failures)
 _BOARD_ID = re.compile(BOARD_ID_PATTERN)
 _KEY = re.compile(KEY_PATTERN)
 
 # Коды закрытия WebSocket, которые понимает клиент.
-CLOSE_BAD_CODE, CLOSE_FORBIDDEN, CLOSE_NOT_FOUND, CLOSE_LOCKED, CLOSE_FULL = 4401, 4403, 4404, 4408, 4429
+CLOSE_BAD_CODE, CLOSE_FORBIDDEN, CLOSE_NOT_FOUND, CLOSE_LOCKED, CLOSE_KICKED, CLOSE_FULL = \
+    4401, 4403, 4404, 4408, 4410, 4429
 CLOSE_POLICY, CLOSE_TOO_BIG = 1008, 1009
 
 
@@ -52,6 +53,16 @@ class BadBoardFile(BaseHTTPError):
 class WrongCode(BaseHTTPError):
     http_status = 403
     default_code = 4031
+
+
+class Banned(BaseHTTPError):
+    http_status = 403
+    default_code = 4032
+
+
+class CodeNotFound(BaseHTTPError):
+    http_status = 404
+    default_code = 4041
 
 
 class BoardFull(BaseHTTPError):
@@ -84,27 +95,47 @@ async def create_board(dto: CreateBoardDTO, request: Request):
     return await run('boards.create', dto)
 
 
-async def check_code(ip: str, board_id: str, code: str) -> str | None:
-    """Проверка кода с учётом защиты от перебора. Возвращает причину отказа или None."""
+async def admit(ip: str, board_id: str, author: str, code: str):
+    """
+    Решение о входе с учётом защиты от перебора. Возвращает (причина отказа или None, BoardAdmit).
+    Участник, уже входивший на доску, и создатель входят без кода и даже во время блокировки адреса.
+    """
     wait = guard.retry_after(ip, board_id)
+    result = await run('boards.admit', AdmitDTO(board_id=board_id, author=author, code='' if wait else code))
+    if not result.found:
+        return 'not_found', result
+    if result.banned:
+        return 'banned', result
+    if result.granted:
+        guard.success(ip, board_id)
+        return None, result
     if wait:
-        return f'locked:{math.ceil(wait)}'
-    access = await run('boards.access', AccessDTO(board_id=board_id, code=code))
-    if not access.found:
-        guard.fail(ip, None)
-        return 'not_found'
-    if not access.granted:
+        return f'locked:{math.ceil(wait)}', result
+    if result.code_tried:  # неудачей считается только введённый неверный код
         guard.fail(ip, board_id)
-        return 'bad_code'
-    guard.success(ip, board_id)
-    return None
+    return 'bad_code', result
+
+
+@router.post('/boards/resolve', dependencies=[Depends(require('boards.join'))])
+async def resolve_board(dto: CodeDTO, request: Request):
+    """Вход только по коду: код указывает на доску. Неверные коды считаются защитой от перебора."""
+    ip = _client(request)
+    wait = guard.retry_after(ip)
+    if wait:
+        raise TooManyRequests(f'Слишком много неверных кодов. Повторите через {math.ceil(wait / 60)} мин')
+    result = await run('boards.resolve', dto)
+    if not result.found:
+        guard.fail(ip)
+        raise CodeNotFound('Доска с таким кодом не найдена')
+    guard.success(ip)
+    return {'id': result.id, 'title': result.title}
 
 
 class ImportRequest(BaseModel):
     mode: Literal['append', 'replace'] = 'append'
     author: str = Field(pattern=KEY_PATTERN)
     name: str = Field(default='', max_length=200)
-    code: str = Field(max_length=64)
+    code: str = Field(default='', max_length=64)
     board: BoardFile
 
 
@@ -133,9 +164,11 @@ async def import_board(request: Request, board_id: str = Path(pattern=BOARD_ID_P
         first = exc.errors()[0] if exc.errors() else {}
         where = '.'.join(str(p) for p in first.get('loc', ()))
         raise BadBoardFile(f'Файл доски не распознан ({where or "формат"})')
-    denied = await check_code(ip, board_id, req.code)
+    denied, _ = await admit(ip, board_id, req.author, req.code)
     if denied == 'not_found':
         raise NotFoundError('Доска не найдена')
+    if denied == 'banned':
+        raise Banned('Вы исключены из этой доски')
     if denied == 'bad_code':
         raise WrongCode('Неверный код доски')
     if denied:
@@ -212,6 +245,8 @@ async def _deny(ws: WebSocket, reason: str):
         await ws.close(code=CLOSE_LOCKED, reason='retry:' + reason.split(':', 1)[1])
     elif reason == 'not_found':
         await ws.close(code=CLOSE_NOT_FOUND, reason='board not found')
+    elif reason == 'banned':
+        await ws.close(code=CLOSE_KICKED, reason='banned')
     else:
         await ws.close(code=CLOSE_BAD_CODE, reason='bad code')
 
@@ -233,10 +268,9 @@ async def board_socket(ws: WebSocket, board_id: str):
         await ws.close(code=CLOSE_POLICY, reason='hello expected')
         return
     if not _BOARD_ID.match(board_id):
-        guard.fail(ip, None)
         await _deny(ws, 'not_found')
         return
-    denied = await check_code(ip, board_id, hello.code)
+    denied, _ = await admit(ip, board_id, hello.author, hello.code)
     if denied:
         await _deny(ws, denied)
         return
@@ -315,6 +349,28 @@ async def board_socket(ws: WebSocket, board_id: str):
                     rec = room.add_chat(peer, text_dto.text)
                     room.broadcast({'t': 'chat', 'message': rec.public()})
 
+                elif kind == 'setcode':
+                    if not peer.creator:
+                        peer.send({'t': 'error', 'message': 'Код меняет только создатель доски'})
+                        continue
+                    new = await run('boards.set_code', SetCodeDTO(board_id=board_id, code=msg.get('code') or None))
+                    peer.send({'t': 'code', 'code': new.code})
+
+                elif kind == 'kick':
+                    target = room.peers.get(msg.get('id')) if isinstance(msg.get('id'), str) else None
+                    if not peer.creator:
+                        peer.send({'t': 'error', 'message': 'Исключать участников может только создатель доски'})
+                        continue
+                    if target is None or target.creator or target.author == peer.author:
+                        peer.send({'t': 'error', 'message': 'Этого участника нельзя исключить'})
+                        continue
+                    await run('boards.ban', BanDTO(board_id=board_id, author=target.author))
+                    new = await run('boards.set_code', SetCodeDTO(board_id=board_id))
+                    # Все вкладки исключённого: тот же ключ автора.
+                    for other in [p for p in room.peers.values() if p.author == target.author]:
+                        await hub.kick(room, other)
+                    peer.send({'t': 'code', 'code': new.code, 'kicked': target.name})
+
                 elif kind == 'rename':
                     peer.name = clean_name(str(msg.get('name', '')))
                     room.broadcast({'t': 'peer', 'peer': peer.public()})
@@ -327,7 +383,7 @@ async def board_socket(ws: WebSocket, board_id: str):
             except ValidationError:
                 peer.send({'t': 'error', 'message': 'Некорректные данные'})
             except CoreError as exc:
-                peer.send({'t': 'error', 'message': exc.message or 'Ошибка операции'})
+                peer.send({'t': 'error', 'message': str(exc) or 'Ошибка операции'})
             except (WebSocketDisconnect, SlowConsumer):
                 raise
             except Exception:

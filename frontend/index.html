@@ -30,7 +30,7 @@
           </label>
           <label>Код входа <span class="hint">необязательно — иначе сгенерируется</span>
             <input type="text" id="new-code" name="code" maxlength="64" autocomplete="off" spellcheck="false"
-                   placeholder="4–32 буквы или цифры">
+                   placeholder="6–32 буквы или цифры, должен быть свободен">
           </label>
           <p class="error-text" id="create-error" hidden></p>
           <div class="row">
@@ -38,21 +38,19 @@
             <button class="btn ghost" id="from-file-btn" type="button">Из файла…</button>
             <input type="file" id="from-file" accept=".json,application/json" hidden>
           </div>
-          <p class="hint">Войти на доску можно только по ссылке и коду. Файл доски (.doska.json) выгружается
-            на доске через меню «Файл доски».</p>
+          <p class="hint">Участники входят по коду. Приглашать, менять код и исключать участников может только
+            создатель доски.</p>
         </form>
       </section>
       <section class="form-card" aria-labelledby="join-title">
-        <h2 id="join-title">Открыть по ссылке</h2>
+        <h2 id="join-title">Войти по коду</h2>
         <form id="join-form" novalidate>
-          <label>Ссылка на доску
-            <input type="text" id="join-link" name="link" autocomplete="off" placeholder="http://…/b/…">
+          <label>Код доски <span class="hint">его сообщает создатель доски</span>
+            <input type="text" id="join-code" name="code" maxlength="64" autocomplete="off" spellcheck="false"
+                   class="code-value" placeholder="Например, 8P4H5XYU">
           </label>
-          <label>Код доски
-            <input type="text" id="join-code" name="code" maxlength="64" autocomplete="off" spellcheck="false">
-          </label>
-          <p class="error-text" id="join-error" hidden></p>
-          <div class="row"><button class="btn" type="submit">Открыть</button></div>
+          <p class="error-text" id="join-error" role="alert" hidden></p>
+          <div class="row"><button class="btn primary" type="submit" id="join-btn">Войти</button></div>
         </form>
       </section>
     </div>

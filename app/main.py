@@ -16,8 +16,8 @@ from app.scenarios.boards import BOARD_ID_PATTERN, CleanupDTO
 
 log = logging.getLogger('app.main')
 
-REQUIRED_SCENARIOS = {'boards.create', 'boards.access', 'boards.load', 'boards.save', 'boards.touch',
-                      'boards.cleanup', 'service.ready'}
+REQUIRED_SCENARIOS = {'boards.create', 'boards.resolve', 'boards.admit', 'boards.set_code', 'boards.ban',
+                      'boards.load', 'boards.save', 'boards.touch', 'boards.cleanup', 'service.ready'}
 CLEANUP_EVERY_SECONDS = 3600
 FRONTEND = ROOT / 'frontend'
 
@@ -45,8 +45,12 @@ class SecurityHeaders:
         async def wrapped(message):
             if message['type'] == 'http.response.start':
                 names = {k for k, _ in message.get('headers', [])}
-                message['headers'] = list(message.get('headers', [])) + [
-                    h for h in SECURITY_HEADERS if h[0] not in names]
+                extra = [h for h in SECURITY_HEADERS if h[0] not in names]
+                # Страницы, скрипты и стили — с проверкой свежести: браузер не выполнит
+                # старый скрипт с новым сервером после обновления.
+                if b'cache-control' not in names:
+                    extra.append((b'cache-control', b'no-cache'))
+                message['headers'] = list(message.get('headers', [])) + extra
             await send(message)
         await self.app(scope, receive, wrapped)
 

@@ -284,6 +284,11 @@ class Hub:
             room.broadcast({'t': 'leave', 'id': peer.id})
         self._maybe_unload(room)
 
+    async def kick(self, room: Room, peer: Peer):
+        """Исключение: соединение закрывается с 4410, остальные участники остаются на доске."""
+        room.broadcast({'t': 'kicked', 'id': peer.id, 'name': peer.name}, exclude=peer)
+        await _close(peer, 4410, 'kicked')
+
     def _maybe_unload(self, room: Room):
         if not room.peers and room.holders <= 0 and self.rooms.get(room.board_id) is room:
             task = asyncio.get_running_loop().create_task(self._unload(room))

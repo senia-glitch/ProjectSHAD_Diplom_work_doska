@@ -12,8 +12,9 @@ class Board(SQLModel, table=True):
     title: str = Field(sa_column=sa.Column(sa.String(120), nullable=False, server_default=''))
     created_at: datetime | None = Field(default=None, sa_column=sa.Column(
         sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')))
-    # Хеш кода входа (scrypt). NULL — доска из версии без кодов: войти на неё нельзя.
-    code_hash: str | None = Field(default=None, sa_column=sa.Column(sa.String(200), nullable=True))
+    # HMAC-SHA256 кода входа с секретом сервера; уникален: код однозначно указывает на доску.
+    # NULL — доска из версии без кодов: войти на неё нельзя.
+    code_lookup: str | None = Field(default=None, sa_column=sa.Column(sa.String(64), nullable=True, unique=True))
     creator_key: str | None = Field(default=None, sa_column=sa.Column(sa.String(40), nullable=True))
     # Последняя активность: по ней удаляются заброшенные доски.
     last_active_at: datetime | None = Field(default=None, sa_column=sa.Column(
@@ -54,8 +55,19 @@ class ChatMessage(SQLModel, table=True):
         sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')))
 
 
+class BoardMember(SQLModel, table=True):
+    """Кто входил на доску: повторный вход без кода. banned — исключён создателем."""
+    __tablename__ = 'board_members'
+    board_id: str = Field(sa_column=sa.Column(
+        sa.String(40), sa.ForeignKey('boards.id', ondelete='CASCADE'), primary_key=True))
+    author_key: str = Field(sa_column=sa.Column(sa.String(40), primary_key=True))
+    banned: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
+    joined_at: datetime | None = Field(default=None, sa_column=sa.Column(
+        sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')))
+
+
 metadata = SQLModel.metadata
 
 
 def get_all_schemas():
-    return {'boards': Board, 'strokes': Stroke, 'chat_messages': ChatMessage}
+    return {'boards': Board, 'strokes': Stroke, 'chat_messages': ChatMessage, 'board_members': BoardMember}

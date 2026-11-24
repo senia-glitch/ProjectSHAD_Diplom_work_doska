@@ -66,6 +66,7 @@ class BoardSettings:
         self.board_code_failures = _int_env('BOARD_BOARD_CODE_FAILURES', 30, 1, 100000)
         self.code_failure_window = _int_env('BOARD_CODE_FAILURE_WINDOW_SECONDS', 900, 10, 86400)
         self.code_lock_seconds = _int_env('BOARD_CODE_LOCK_SECONDS', 900, 10, 86400)
+        self.global_code_failures = _int_env('BOARD_GLOBAL_CODE_FAILURES', 300, 1, 1_000_000)
         # Разрешённые Origin для WebSocket через запятую (https://board.example.com).
         # Пусто — допускается только тот же хост, что в заголовке Host (тот же сайт).
         self.allowed_origins = {o.strip().rstrip('/').lower()

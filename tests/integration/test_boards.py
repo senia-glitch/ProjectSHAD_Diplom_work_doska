@@ -21,9 +21,10 @@ def key():
 
 
 def new_board(client, title='Тест', code=None):
-    response = client.post('/api/v1/boards', json={'title': title, 'author': key(), 'code': code})
+    author = key()
+    response = client.post('/api/v1/boards', json={'title': title, 'author': author, 'code': code})
     assert response.status_code == 201, response.text
-    return response.json()
+    return {**response.json(), 'author': author}
 
 
 def join(client, board, name, author=None, code=None, headers=None):
@@ -66,9 +67,16 @@ def test_service_and_board_creation(client):
     assert client.get('/api/v1/ready').json() == {'status': 'ready'}
     board = new_board(client, '  План   спринта ')
     assert board['title'] == 'План спринта' and len(board['id']) >= 16 and len(board['code']) == 8
-    assert new_board(client, code='sun-flower 7')['code'] == 'SUNFLOWER7'
-    bad = client.post('/api/v1/boards', json={'title': 'x', 'author': key(), 'code': 'ab'})
-    assert bad.status_code == 422
+    custom = 'sun-' + key()[:8]
+    assert new_board(client, code=custom)['code'] == custom.replace('-', '').upper()
+    taken = client.post('/api/v1/boards', json={'title': 'x', 'author': key(), 'code': custom.lower()})
+    assert taken.status_code == 409 and 'занят' in taken.json()['error']['message'] or 'использ' in taken.text
+    for short in ('ab', 'abcde'):
+        assert client.post('/api/v1/boards', json={'title': 'x', 'author': key(), 'code': short}).status_code == 422
+    # Вход только по коду: код указывает на доску.
+    found = client.post('/api/v1/boards/resolve', json={'code': board['code'].lower()})
+    assert found.status_code == 200 and found.json() == {'id': board['id'], 'title': 'План спринта'}
+    assert client.post('/api/v1/boards/resolve', json={'code': 'NOSUCHCODE1'}).status_code == 404
     assert client.post('/api/v1/boards', json={'title': 'x' * 121, 'author': key()}).status_code == 422
     assert client.get(f"/api/v1/boards/{board['id']}").status_code in (404, 405)  # без кода доска не читается
     page = client.get(f"/b/{board['id']}")
@@ -131,7 +139,7 @@ def test_realtime_collaboration_and_persistence(client):
 
     # Последний участник ушёл: доска сохранена и выгружена из памяти; вход поднимает её из БД.
     wait_unloaded(board['id'])
-    c_ctx, carol = join(client, board, 'Кэрол', alice_key)
+    c_ctx, carol = join(client, board, 'Кэрол', alice_key, code='')  # уже входила: код не нужен
     try:
         init_c = recv_until(carol, 'init')
         assert [s['id'] for s in init_c['strokes']] == [first['id']]
@@ -172,7 +180,7 @@ def test_autosave_and_housekeeping(client):
 
 
 def test_entry_protection(client, monkeypatch):
-    board = new_board(client, code='secret42')
+    board = new_board(client, code='secret' + key()[:6])  # коды уникальны во всей системе
     assert closed_with(client, board, code='wrong').code == 4401
     assert closed_with(client, {'id': 'y' * 22, 'code': 'x'}).code == 4404
     assert closed_with(client, board, path=f"/api/v1/boards/bad.id/ws").code == 4404
@@ -186,6 +194,13 @@ def test_entry_protection(client, monkeypatch):
             ws.receive_json()
         assert bad.value.code == 1008
 
+    # Подключения без кода не считаются неверным кодом (старая вкладка не блокирует адрес).
+    monkeypatch.setattr(routes, 'guard', EntryGuard(10000, 3, 1000, 60, 60))
+    for _ in range(5):
+        assert closed_with(client, board, code='').code == 4401
+    ctx, conn = join(client, board, 'x')
+    recv_until(conn, 'init')
+    ctx.__exit__(None, None, None)
     # Перебор кода: после лимита неудач даже верный код отклоняется до конца блокировки.
     monkeypatch.setattr(routes, 'guard', EntryGuard(10000, 3, 1000, 60, 60))
     for _ in range(3):
@@ -213,6 +228,8 @@ def test_entry_protection(client, monkeypatch):
 
 
 def test_import(client, monkeypatch):
+    from app.realtime.hub import KeyedRateLimiter
+    monkeypatch.setattr(routes, '_import_limiter', KeyedRateLimiter(1000))
     data = {'format': 'doska', 'version': 1, 'title': 'Схема',
             'strokes': [{'tool': 'pen', 'color': '#112233', 'width': 4, 'pts': [0, 0, 10, 10]},
                         {'tool': 'ellipse', 'color': '#112233', 'width': 4, 'pts': [0, 0, 30, 20]}]}
@@ -238,7 +255,12 @@ def test_import(client, monkeypatch):
         assert len(hub.rooms[target['id']].strokes) == 2
 
         # Ошибки не меняют доску.
-        assert client.post(url, json=body(code='wrong')).status_code == 403
+        # Участник, уже загружавший файл, проходит без кода; новый автор с неверным кодом — нет.
+        assert client.post(url, json=body(code='', mode='append')).status_code == 200
+        recv_until(bob, 'import')
+        assert client.post(url, json=body(code='wrong', author=key())).status_code == 403
+        assert client.post(url, json=body(mode='replace')).status_code == 200
+        recv_until(bob, 'import')
         broken = {**data, 'strokes': [{**data['strokes'][0], 'pts': [1, 2, 3]}]}
         assert client.post(url, json=body(board=broken)).status_code == 422
         assert client.post(url, json=body(board={**data, 'format': 'other'})).status_code == 422
@@ -253,3 +275,62 @@ def test_import(client, monkeypatch):
         ctx.__exit__(None, None, None)
     missing = '/api/v1/boards/' + 'z' * 22 + '/import'
     assert client.post(missing, json=body()).status_code == 404
+
+
+def test_creator_rights_kick_and_code_change(client):
+    board = new_board(client, code=None)
+    bob_key, dave_key = key(), key()
+    c_ctx, creator = join(client, board, 'Создатель', board['author'], code='')  # создатель входит без кода
+    try:
+        assert recv_until(creator, 'init')['you']['creator'] is True
+        b_ctx, bob = join(client, board, 'Боб', bob_key)
+        d_ctx, dave = join(client, board, 'Дэйв', dave_key)
+        try:
+            bob_id = recv_until(bob, 'init')['you']['id']
+            recv_until(dave, 'init')
+
+            # Участник не может менять код и исключать.
+            bob.send_json({'t': 'setcode'})
+            assert 'создатель' in recv_until(bob, 'error')['message']
+            bob.send_json({'t': 'kick', 'id': bob_id})
+            assert 'создатель' in recv_until(bob, 'error')['message']
+
+            creator.send_json({'t': 'kick', 'id': bob_id})
+            new_code = recv_until(creator, 'code')
+            assert new_code['kicked'] == 'Боб' and new_code['code'] != board['code']
+            with pytest.raises(WebSocketDisconnect) as kicked:
+                for _ in range(50):
+                    bob.receive_json()
+            assert kicked.value.code == 4410
+            assert recv_until(dave, 'kicked')['name'] == 'Боб'   # остальные остаются на доске
+            dave.send_json({'t': 'ping'})
+            assert recv_until(dave, 'pong')
+        finally:
+            b_ctx.__exit__(None, None, None)
+            d_ctx.__exit__(None, None, None)
+
+        # Старый код больше не действует; исключённый не входит и с новым кодом; участник входит без кода.
+        assert closed_with(client, board).code == 4401
+        ctx, again = join(client, {**board, 'code': new_code['code']}, 'Боб', bob_key)
+        with pytest.raises(WebSocketDisconnect) as banned:
+            again.receive_json()
+        assert banned.value.code == 4410
+        ctx.__exit__(None, None, None)
+        ctx, dave2 = join(client, board, 'Дэйв', dave_key, code='')
+        assert recv_until(dave2, 'init')
+        ctx.__exit__(None, None, None)
+        resolved = client.post('/api/v1/boards/resolve', json={'code': new_code['code']})
+        assert resolved.json()['id'] == board['id']
+        assert client.post('/api/v1/boards/resolve', json={'code': board['code']}).status_code == 404
+
+        # Свой код: проверка формата и уникальности.
+        creator.send_json({'t': 'setcode', 'code': 'abc'})
+        assert recv_until(creator, 'error')
+        other = new_board(client)
+        creator.send_json({'t': 'setcode', 'code': other['code']})
+        assert 'код' in recv_until(creator, 'error')['message'].lower()
+        mine = 'my-' + key()[:8]
+        creator.send_json({'t': 'setcode', 'code': mine})
+        assert recv_until(creator, 'code')['code'] == mine.replace('-', '').upper()
+    finally:
+        c_ctx.__exit__(None, None, None)

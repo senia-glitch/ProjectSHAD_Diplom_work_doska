@@ -3,18 +3,17 @@
 Живая доска находится в памяти процесса (app/realtime/hub.py); БД хранит её снимок,
 который автосохранение перезаписывает целиком.
 """
-import asyncio
-import base64
 import hashlib
 import hmac
 import math
+import os
 import re
 import secrets
 from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
-from core import BaseScenario, NotFoundError, register_scenario
+from core import BaseScenario, ConflictError, NotFoundError, register_scenario
 
 BOARD_ID_PATTERN = r'^[A-Za-z0-9_-]{16,40}$'
 KEY_PATTERN = r'^[A-Za-z0-9_-]{8,40}$'
@@ -25,8 +24,8 @@ Tool = Literal['pen', 'eraser', 'line', 'rect', 'ellipse']
 
 CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'  # без похожих 0/O, 1/I
 GENERATED_CODE_LENGTH = 8                           # 32^8 = 2^40 вариантов
-_CODE_RE = re.compile(r'^\w{4,32}$')
-_SCRYPT = {'n': 2 ** 14, 'r': 8, 'p': 1}
+CUSTOM_CODE_MIN = 6                                 # код один на всю систему: короткие легко перебрать
+_CODE_RE = re.compile(r'^\w{%d,32}$' % CUSTOM_CODE_MIN)
 
 
 def normalize_code(value: str) -> str:
@@ -38,24 +37,20 @@ def generate_code() -> str:
     return ''.join(secrets.choice(CODE_ALPHABET) for _ in range(GENERATED_CODE_LENGTH))
 
 
-def hash_code(code: str) -> str:
-    salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(normalize_code(code).encode(), salt=salt, dklen=32, **_SCRYPT)
-    b64 = lambda b: base64.urlsafe_b64encode(b).decode().rstrip('=')
-    return f"scrypt${_SCRYPT['n']}${_SCRYPT['r']}${_SCRYPT['p']}${b64(salt)}${b64(digest)}"
+def _code_secret() -> bytes:
+    secret = os.getenv('BOARD_CODE_SECRET') or os.getenv('CORE_JWT_SECRET') or ''
+    if len(secret) < 16 or secret == '__GENERATE__':
+        raise RuntimeError('BOARD_CODE_SECRET (или CORE_JWT_SECRET) должен быть задан: не короче 16 символов')
+    return secret.encode()
 
 
-def verify_code(code: str, stored: str | None) -> bool:
-    if not stored:
-        return False
-    try:
-        kind, n, r, p, salt, digest = stored.split('$')
-        unb64 = lambda s: base64.urlsafe_b64decode(s + '=' * (-len(s) % 4))
-        actual = hashlib.scrypt(normalize_code(code).encode(), salt=unb64(salt), dklen=32,
-                                n=int(n), r=int(r), p=int(p))
-    except ValueError:
-        return False
-    return kind == 'scrypt' and hmac.compare_digest(actual, unb64(digest))
+def code_lookup(code: str) -> str:
+    """
+    Ключ поиска доски по коду: HMAC-SHA256 с секретом сервера. Код в БД не хранится,
+    но по ключу доска находится одним запросом, а уникальный индекс гарантирует, что
+    один код ведёт ровно на одну доску. Смена секрета делает все коды недействительными.
+    """
+    return hmac.new(_code_secret(), normalize_code(code).encode(), hashlib.sha256).hexdigest()
 
 
 def author_tag(author: str) -> str:
@@ -133,6 +128,15 @@ class ChatTextDTO(BaseModel):
 
 # ---------------------------------------------------------------- хранение
 
+def _checked_code(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+    value = normalize_code(value)
+    if not _CODE_RE.match(value):
+        raise ValueError(f'Код: от {CUSTOM_CODE_MIN} до 32 букв или цифр')
+    return value
+
+
 class StoredStroke(BaseModel):
     """Штрих в снимке. pts хранится готовой JSON-строкой: без разбора в числа в памяти сервера."""
     key: str
@@ -164,12 +168,7 @@ class CreateBoardDTO(BaseModel):
     @field_validator('code')
     @classmethod
     def check_code(cls, value):
-        if value is None or not value.strip():
-            return None
-        value = normalize_code(value)
-        if not _CODE_RE.match(value):
-            raise ValueError('Код: от 4 до 32 букв или цифр')
-        return value
+        return _checked_code(value)
 
 
 class BoardCreated(BaseModel):
@@ -183,16 +182,50 @@ class BoardIdDTO(BaseModel):
     board_id: str = Field(pattern=BOARD_ID_PATTERN)
 
 
-class AccessDTO(BaseModel):
+class AdmitDTO(BaseModel):
     board_id: str = Field(pattern=BOARD_ID_PATTERN)
+    author: str = Field(pattern=KEY_PATTERN)
+    code: str = Field(default='', max_length=64)
+
+
+class BoardAdmit(BaseModel):
+    """Решение о входе: по коду, как участник, уже входивший раньше, или как создатель."""
+    found: bool
+    granted: bool = False
+    via: Literal['code', 'member', 'creator', ''] = ''
+    banned: bool = False
+    code_tried: bool = False
+    title: str = ''
+    creator_key: str | None = None
+
+
+class CodeDTO(BaseModel):
     code: str = Field(max_length=64)
 
 
-class BoardAccess(BaseModel):
+class ResolvedBoard(BaseModel):
     found: bool
-    granted: bool = False
+    id: str = ''
     title: str = ''
-    creator_key: str | None = None
+
+
+class SetCodeDTO(BaseModel):
+    board_id: str = Field(pattern=BOARD_ID_PATTERN)
+    code: str | None = Field(default=None, max_length=64)
+
+    @field_validator('code')
+    @classmethod
+    def check_code(cls, value):
+        return _checked_code(value)
+
+
+class NewCode(BaseModel):
+    code: str
+
+
+class BanDTO(BaseModel):
+    board_id: str = Field(pattern=BOARD_ID_PATTERN)
+    author: str = Field(pattern=KEY_PATTERN)
 
 
 class BoardSnapshot(BaseModel):
@@ -248,30 +281,94 @@ _INSERT_STROKES = (
     'WITH ORDINALITY AS u(k, a, t, c, w, p, n) ORDER BY u.n')
 
 
+CODE_TAKEN = 'Такой код уже используется: выберите другой'
+
+
+async def _with_unique_code(custom: str | None, attempt):
+    """attempt(code, lookup) -> строки или []; пустой результат — код занят (уникальный индекс)."""
+    for _ in range(1 if custom else 5):
+        code = custom or generate_code()
+        rows = await attempt(code, code_lookup(code))
+        if rows:
+            return code, rows
+    raise ConflictError(CODE_TAKEN if custom else 'Не удалось подобрать свободный код, повторите')
+
+
 @register_scenario('boards.create', dto=CreateBoardDTO, response=BoardCreated)
 class CreateBoard(BaseScenario):
     async def execute(self, dto):
-        code = dto.code or generate_code()
-        code_hash = await asyncio.to_thread(hash_code, code)
-        rows = await self._db.query(
-            'INSERT INTO boards (id, title, code_hash, creator_key) VALUES (:id, :title, :code_hash, :creator) '
-            'RETURNING id, title, created_at',
-            {'id': secrets.token_urlsafe(16), 'title': dto.title, 'code_hash': code_hash, 'creator': dto.author},
-            channel='write')
+        board_id = secrets.token_urlsafe(16)
+
+        async def attempt(code, lookup):
+            return await self._db.query(
+                'INSERT INTO boards (id, title, code_lookup, creator_key) VALUES (:id, :title, :lookup, :creator) '
+                'ON CONFLICT (code_lookup) DO NOTHING RETURNING id, title, created_at',
+                {'id': board_id, 'title': dto.title, 'lookup': lookup, 'creator': dto.author}, channel='write')
+        code, rows = await _with_unique_code(dto.code, attempt)
         return BoardCreated(code=code, **rows[0])
 
 
-@register_scenario('boards.access', dto=AccessDTO, response=BoardAccess)
-class CheckAccess(BaseScenario):
+@register_scenario('boards.resolve', dto=CodeDTO, response=ResolvedBoard)
+class ResolveBoard(BaseScenario):
+    """Вход только по коду: код однозначно указывает на доску."""
     async def execute(self, dto):
-        rows = await self._db.query('SELECT title, code_hash, creator_key FROM boards WHERE id = :id',
-                                    {'id': dto.board_id})
-        if not rows:
-            return BoardAccess(found=False)
+        if not normalize_code(dto.code):
+            return ResolvedBoard(found=False)
+        rows = await self._db.query('SELECT id, title FROM boards WHERE code_lookup = :lookup',
+                                    {'lookup': code_lookup(dto.code)})
+        return ResolvedBoard(found=True, **rows[0]) if rows else ResolvedBoard(found=False)
+
+
+@register_scenario('boards.admit', dto=AdmitDTO, response=BoardAdmit)
+class AdmitToBoard(BaseScenario):
+    async def execute(self, dto):
+        rows = await self._db.query(
+            'SELECT b.title, b.code_lookup, b.creator_key, m.banned FROM boards b '
+            'LEFT JOIN board_members m ON m.board_id = b.id AND m.author_key = :author WHERE b.id = :id',
+            {'id': dto.board_id, 'author': dto.author})
+        # Доска без кода — из версии до кодов: войти на неё нельзя, для клиента её нет.
+        if not rows or rows[0]['code_lookup'] is None:
+            return BoardAdmit(found=False)
         row = rows[0]
-        granted = await asyncio.to_thread(verify_code, dto.code, row['code_hash'])
-        return BoardAccess(found=True, granted=granted, title=row['title'] if granted else '',
-                           creator_key=row['creator_key'] if granted else None)
+        info = {'found': True, 'title': row['title'], 'creator_key': row['creator_key']}
+        if row['banned']:
+            return BoardAdmit(banned=True, **info)
+        if row['creator_key'] == dto.author:
+            return BoardAdmit(granted=True, via='creator', **info)
+        if row['banned'] is False:  # запись участника есть и он не исключён
+            return BoardAdmit(granted=True, via='member', **info)
+        tried = bool(normalize_code(dto.code))
+        if tried and hmac.compare_digest(code_lookup(dto.code), row['code_lookup']):
+            await self._db.query(
+                'INSERT INTO board_members (board_id, author_key) VALUES (:id, :author) '
+                'ON CONFLICT (board_id, author_key) DO NOTHING', {'id': dto.board_id, 'author': dto.author},
+                channel='write')
+            return BoardAdmit(granted=True, via='code', code_tried=True, **info)
+        return BoardAdmit(code_tried=tried, **info)
+
+
+@register_scenario('boards.set_code', dto=SetCodeDTO, response=NewCode)
+class SetBoardCode(BaseScenario):
+    """Новый код доски (свой или сгенерированный). Старый код сразу перестаёт действовать."""
+    async def execute(self, dto):
+        async def attempt(code, lookup):
+            return await self._db.query(
+                'UPDATE boards SET code_lookup = :lookup WHERE id = :id '
+                'AND NOT EXISTS (SELECT 1 FROM boards WHERE code_lookup = :lookup) RETURNING id',
+                {'id': dto.board_id, 'lookup': lookup}, channel='write')
+        code, _ = await _with_unique_code(dto.code, attempt)
+        return NewCode(code=code)
+
+
+@register_scenario('boards.ban', dto=BanDTO, response=CountResponse)
+class BanMember(BaseScenario):
+    """Исключённый участник не входит на доску ни по старому, ни по новому коду."""
+    async def execute(self, dto):
+        rows = await self._db.query(
+            'INSERT INTO board_members (board_id, author_key, banned) VALUES (:id, :author, true) '
+            'ON CONFLICT (board_id, author_key) DO UPDATE SET banned = true RETURNING 1',
+            {'id': dto.board_id, 'author': dto.author}, channel='write')
+        return CountResponse(count=len(rows))
 
 
 @register_scenario('boards.load', dto=BoardIdDTO, response=BoardSnapshot)

@@ -62,19 +62,29 @@ fromFile.addEventListener("change", async () => {
   }
 });
 
-document.getElementById("join-form").addEventListener("submit", (event) => {
+/* Вход только по коду: сервер находит доску по коду. */
+document.getElementById("join-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const raw = document.getElementById("join-link").value.trim();
-  const match = raw.match(/(?:\/b\/)?([A-Za-z0-9_-]{16,40})\/?$/);
-  const error = document.getElementById("join-error");
-  if (!match) {
-    error.textContent = "Вставьте ссылку вида …/b/идентификатор";
-    error.hidden = false;
-    return;
-  }
   const code = document.getElementById("join-code").value.trim();
-  if (code) rememberCode(match[1], code);  // иначе код спросит страница доски
-  location.assign("/b/" + match[1]);
+  const error = document.getElementById("join-error");
+  const btn = document.getElementById("join-btn");
+  error.hidden = true;
+  if (!code) { error.textContent = "Введите код доски"; error.hidden = false; return; }
+  btn.disabled = true;
+  try {
+    const response = await fetch("/api/v1/boards/resolve", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }),
+    });
+    if (!response.ok) throw new Error(await apiError(response, "Не удалось войти"));
+    const board = await response.json();
+    rememberCode(board.id, code);
+    rememberBoard(board);
+    location.assign("/b/" + encodeURIComponent(board.id));
+  } catch (err) {
+    error.textContent = err.message === "Failed to fetch" ? "Сервер недоступен" : err.message;
+    error.hidden = false;
+    btn.disabled = false;
+  }
 });
 
 function renderRecent() {

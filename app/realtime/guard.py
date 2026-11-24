@@ -1,4 +1,4 @@
-"""Защита входа на доски: частота подключений, перебор кода с одного адреса и по одной доске."""
+"""Защита входа на доски: частота подключений и перебор кода (с адреса, к доске, по всей системе)."""
 import time
 from collections import OrderedDict
 
@@ -33,38 +33,61 @@ class FailureTracker:
         self.items.pop(key, None)
 
 
+class _BoundedSet:
+    def __init__(self, limit: int):
+        self.limit, self.items = limit, OrderedDict()
+
+    def add(self, key):
+        self.items[key] = None
+        self.items.move_to_end(key)
+        while len(self.items) > self.limit:
+            self.items.popitem(last=False)
+
+    def __contains__(self, key):
+        return key in self.items
+
+
 class EntryGuard:
     """
+    Неудачей считается только неверный код. Подключение без кода (например, участник,
+    который уже входил на доску) неудачей не считается.
+
     - handshakes: подключений в минуту с одного адреса (спам входами, в том числе с верным кодом);
-    - ip_failures: неверных кодов с одного адреса по всем доскам;
-    - board_failures: неверных кодов к одной доске со всех адресов (распределённый перебор).
-      Пока доска заблокирована, войти могут только адреса, которые уже входили на неё успешно.
+    - ip_failures: неверных кодов с одного адреса;
+    - board_failures: неверных кодов к одной доске со всех адресов;
+    - global_failures: неверных кодов по всей системе (распределённый перебор кодов: вход только
+      по коду, поэтому любой подобранный код открывает какую-то доску).
+    Пока действует блокировка доски или системы, проходят адреса, которые уже входили успешно.
     """
 
     def __init__(self, handshakes_per_minute: int, ip_failures: int, board_failures: int,
-                 window_seconds: float, lock_seconds: float):
+                 window_seconds: float, lock_seconds: float, global_failures: int = 300):
         self.handshakes = KeyedRateLimiter(handshakes_per_minute)
         self.ip_failures = FailureTracker(ip_failures, window_seconds, lock_seconds)
         self.board_failures = FailureTracker(board_failures, window_seconds, lock_seconds)
-        self.known: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self.global_failures = FailureTracker(global_failures, window_seconds, lock_seconds)
+        self.known = _BoundedSet(50000)       # (доска, адрес) с успешным входом
+        self.known_ips = _BoundedSet(50000)   # адреса с успешным входом куда-либо
 
     def allow_handshake(self, ip: str) -> bool:
         return self.handshakes.allow(ip)
 
-    def retry_after(self, ip: str, board_id: str) -> float:
+    def retry_after(self, ip: str, board_id: str | None = None) -> float:
         wait = self.ip_failures.retry_after(ip)
-        if (board_id, ip) not in self.known:
+        if board_id and (board_id, ip) not in self.known:
             wait = max(wait, self.board_failures.retry_after(board_id))
+        if ip not in self.known_ips:
+            wait = max(wait, self.global_failures.retry_after('*'))
         return wait
 
-    def fail(self, ip: str, board_id: str | None):
+    def fail(self, ip: str, board_id: str | None = None):
         self.ip_failures.fail(ip)
+        self.global_failures.fail('*')
         if board_id:
             self.board_failures.fail(board_id)
 
-    def success(self, ip: str, board_id: str):
+    def success(self, ip: str, board_id: str | None = None):
         self.ip_failures.reset(ip)
-        self.known[(board_id, ip)] = None
-        self.known.move_to_end((board_id, ip))
-        while len(self.known) > 50000:
-            self.known.popitem(last=False)
+        self.known_ips.add(ip)
+        if board_id:
+            self.known.add((board_id, ip))

@@ -6,8 +6,8 @@ import pytest
 from app.access import is_allowed, load_policy
 from app.realtime.guard import EntryGuard, FailureTracker
 from app.realtime.hub import KeyedRateLimiter, LimitError, RateLimiter, Room
-from app.scenarios.boards import (BoardFile, ChatTextDTO, CreateBoardDTO, StrokeDTO, author_tag, clean_chat_text,
-                                  generate_code, hash_code, normalize_code, verify_code)
+from app.scenarios.boards import (BoardFile, ChatTextDTO, CreateBoardDTO, SetCodeDTO, StrokeDTO, author_tag,
+                                  clean_chat_text, code_lookup, generate_code, normalize_code)
 
 
 def test_policy_guest_only_listed_scenarios():
@@ -40,16 +40,24 @@ def test_stroke_validation():
             StrokeDTO(**{'id': 'abcdefgh', 'tool': 'pen', 'color': '#000000', 'width': 3, 'pts': [0, 0], **bad})
 
 
-def test_access_code_rules():
+def test_access_code_rules(monkeypatch):
+    monkeypatch.setenv('BOARD_CODE_SECRET', 's' * 32)
     code = generate_code()
     assert len(code) == 8 and code == normalize_code(code)
-    stored = hash_code(code)
-    assert code not in stored and stored.startswith('scrypt$')
-    assert verify_code(code.lower()[:4] + '-' + code.lower()[4:], stored)  # регистр и дефис не важны
-    assert not verify_code('WRONG123', stored) and not verify_code(code, None) and not verify_code(code, 'garbage')
+    lookup = code_lookup(code)
+    assert code not in lookup and len(lookup) == 64
+    assert code_lookup(code.lower()[:4] + '-' + code.lower()[4:]) == lookup  # регистр и дефис не важны
+    assert code_lookup('WRONG123') != lookup
+    monkeypatch.setenv('BOARD_CODE_SECRET', 't' * 32)
+    assert code_lookup(code) != lookup                     # ключ зависит от секрета сервера
+    monkeypatch.setenv('BOARD_CODE_SECRET', 'short')
+    monkeypatch.delenv('CORE_JWT_SECRET', raising=False)
+    with pytest.raises(RuntimeError):
+        code_lookup(code)
     assert CreateBoardDTO(author='abcdefgh', code=' my-code 42 ').code == 'MYCODE42'
     assert CreateBoardDTO(author='abcdefgh', code='  ').code is None
-    for bad in ('abc', 'x' * 33, 'код!!'):
+    assert SetCodeDTO(board_id='b' * 22).code is None
+    for bad in ('abc', 'abcde', 'x' * 33, 'код!!!'):
         with pytest.raises(ValueError):
             CreateBoardDTO(author='abcdefgh', code=bad)
 
@@ -114,6 +122,13 @@ def test_entry_guard_locks_ip_and_board():
     for _ in range(3):
         guard.fail('7.7.7.7', None)
     assert guard.retry_after('7.7.7.7', 'other') > 0      # перебор с одного адреса по любым доскам
+
+    # Распределённый перебор кодов по всей системе: новые адреса ждут, знакомые проходят.
+    world = EntryGuard(100, 100, 100, window_seconds=60, lock_seconds=60, global_failures=5)
+    world.success('8.8.8.8')
+    for n in range(5):
+        world.fail(f'10.0.0.{n}')
+    assert world.retry_after('10.9.9.9') > 0 and world.retry_after('8.8.8.8') == 0
 
 
 def test_cursor_batching():

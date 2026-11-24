@@ -82,7 +82,7 @@
       <h2 id="name-dialog-title">Вход на доску</h2>
       <p class="muted">Имя увидят другие участники рядом с вашим курсором.</p>
       <label>Имя <input type="text" id="name-input" maxlength="32" autocomplete="nickname" required></label>
-      <label id="code-field">Код доски <span class="hint">его сообщает создатель доски</span>
+      <label id="code-field" hidden>Код доски <span class="hint">его сообщает создатель доски</span>
         <input type="text" id="code-input" maxlength="64" autocomplete="off" autocapitalize="characters" spellcheck="false">
       </label>
       <p class="error-text" id="join-error" role="alert" hidden></p>
@@ -93,12 +93,32 @@
   <dialog class="dialog" id="invite-dialog" aria-labelledby="invite-dialog-title">
     <form method="dialog">
       <h2 id="invite-dialog-title">Пригласить участников</h2>
-      <p class="muted">Для входа нужны ссылка и код. Код можно передать отдельно, например в другом мессенджере.</p>
-      <label>Ссылка <input type="text" id="invite-link" readonly></label>
+      <p class="muted">Для входа достаточно кода: участник открывает сайт и вводит его. Код видите только вы.</p>
+      <label>Сайт <input type="text" id="invite-site" readonly></label>
       <label>Код входа <input type="text" id="invite-code" class="code-value" readonly></label>
+      <p class="error-text" id="invite-unknown" hidden>Код неизвестен на этом устройстве: смените его, чтобы получить новый.</p>
       <div class="row">
-        <button class="btn primary" type="button" id="invite-copy">Копировать ссылку и код</button>
+        <button class="btn primary" type="button" id="invite-copy">Копировать приглашение</button>
         <button class="btn ghost" value="close">Закрыть</button>
+      </div>
+      <div class="dialog-section">
+        <label>Сменить код <span class="hint">старый сразу перестанет действовать, участники на доске останутся</span>
+          <input type="text" id="new-code-input" maxlength="64" autocomplete="off" spellcheck="false"
+                 placeholder="свой код от 6 символов или пусто — сгенерировать">
+        </label>
+        <div class="row"><button class="btn" type="button" id="change-code">Сменить код</button></div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="kick-dialog" aria-labelledby="kick-dialog-title">
+    <form method="dialog">
+      <h2 id="kick-dialog-title">Исключить «<span id="kick-name"></span>»?</h2>
+      <p class="muted">Участник будет отключён и не сможет войти снова. Код доски сменится, новый код увидите только вы.
+        Остальные участники останутся на доске.</p>
+      <div class="row">
+        <button class="btn danger" value="kick">Исключить</button>
+        <button class="btn ghost" value="cancel" autofocus>Отмена</button>
       </div>
     </form>
   </dialog>

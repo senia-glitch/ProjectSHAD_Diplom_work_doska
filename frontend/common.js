@@ -45,6 +45,11 @@ const ICONS = {
   home: _svg('<path d="M3 10.5L12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>'),
   sun: _svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
   moon: _svg('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'),
+  chat: _svg('<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.9A8 8 0 1 1 21 12z"/>'),
+  send: _svg('<path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/>'),
+  upload: _svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5M12 3v12"/>'),
+  file: _svg('<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/>'),
+  image: _svg('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>'),
 };
 
 const icon = (name) => el("span", { class: "icon", "data-icon": name, html: ICONS[name] });
@@ -125,6 +130,63 @@ async function copyText(text) {
   try { ok = document.execCommand("copy"); } catch { ok = false; }
   area.remove();
   return ok;
+}
+
+/* ---------- Файл доски (.doska.json): выгрузка и загрузка ---------- */
+
+const BOARD_FILE_MAX_BYTES = 16 * 1024 * 1024;
+
+async function apiError(response, fallback) {
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 413) return "Файл слишком большой";
+  if (response.status === 429) return data.message || "Слишком много запросов, попробуйте через минуту";
+  return data.message || fallback;
+}
+
+/* Читает и проверяет файл доски; бросает Error с понятным сообщением. */
+async function readBoardFile(file) {
+  if (!file) throw new Error("Файл не выбран");
+  if (file.size > BOARD_FILE_MAX_BYTES) throw new Error("Файл больше 16 МБ");
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { throw new Error("Это не файл доски: ожидается .json"); }
+  if (!data || data.format !== "doska" || !Array.isArray(data.strokes)) throw new Error("Это не файл доски");
+  if (data.version !== 1) throw new Error("Файл сохранён в неподдерживаемой версии");
+  return data;
+}
+
+async function importBoard(boardId, data, mode) {
+  const response = await fetch(`/api/v1/boards/${encodeURIComponent(boardId)}/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode, author: authorKey(), name: store.get("name", "") || "", board: data }),
+  });
+  if (!response.ok) throw new Error(await apiError(response, "Не удалось загрузить файл"));
+  return response.json();
+}
+
+/* Читаемый файл: поля с отступами, каждый штрих — одной строкой. */
+function boardFileText(data) {
+  const strokes = data.strokes.map((s) => "    " + JSON.stringify(s)).join(",\n");
+  const head = JSON.stringify({ ...data, strokes: undefined }, null, 2).replace(/\n}$/, "");
+  return `${head},\n  "strokes": [${strokes ? "\n" + strokes + "\n  " : ""}]\n}\n`;
+}
+
+function strokesWord(n) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return "штрих";
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return "штриха";
+  return "штрихов";
+}
+
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = el("a", { href: url, download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function safeFileName(title) {
+  return (title || "").replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").trim() || "doska";
 }
 
 function formatDate(ts) {

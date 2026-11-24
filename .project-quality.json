@@ -1,4 +1,4 @@
 {"schema_version":1,"checks":[
- {"id":"unit","kind":"test","junit":{"path":".quality/unit.xml","min_passed":7},"argv":["{python}","-m","scripts.check","--junitxml",".quality/unit.xml"],"scope":"unit","required":true,"timeout_seconds":120},
- {"id":"integration","kind":"test","junit":{"path":".quality/integration.xml","min_passed":3},"argv":["{python}","-m","scripts.check","--integration","--database","doska_test","--junitxml",".quality/integration.xml"],"scope":"integration","required":true,"timeout_seconds":120}
+ {"id":"unit","kind":"test","junit":{"path":".quality/unit.xml","min_passed":10},"argv":["{python}","-m","scripts.check","--junitxml",".quality/unit.xml"],"scope":"unit","required":true,"timeout_seconds":120},
+ {"id":"integration","kind":"test","junit":{"path":".quality/integration.xml","min_passed":5},"argv":["{python}","-m","scripts.check","--integration","--database","doska_test","--junitxml",".quality/integration.xml"],"scope":"integration","required":true,"timeout_seconds":120}
 ]}

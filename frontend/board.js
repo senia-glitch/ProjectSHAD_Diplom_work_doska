@@ -40,6 +40,9 @@ const state = {
   redo: [],
   peers: new Map(),            // id -> {name, color, cursor, node}
   me: null,
+  chatIds: new Set(),
+  unread: 0,
+  importing: false,
   ready: false,
   dirty: true,
   committedDirty: true,
@@ -85,7 +88,6 @@ function buildToolbar() {
     ibtn({ icon: "undo", tip: "Отменить (Ctrl+Z)", tipPos: "right", id: "undo-btn", onclick: undo }),
     ibtn({ icon: "redo", tip: "Повторить (Ctrl+Shift+Z)", tipPos: "right", id: "redo-btn", onclick: redo }),
     ibtn({ icon: "fit", tip: "Показать всё (F)", tipPos: "right", onclick: fitToContent }),
-    ibtn({ icon: "download", tip: "Сохранить PNG", tipPos: "right", onclick: exportPng }),
     ibtn({ icon: "trash", tip: "Очистить доску", tipPos: "right", danger: true, onclick: askClear }));
   toolbar.append(tools, colors, widths, actions);
   syncToolbar();
@@ -530,10 +532,15 @@ function fitToContent() {
   const b = bounds(state.strokes);
   if (!b) { resetView(); return; }
   const r = canvas.getBoundingClientRect();
-  const margin = 64;
-  const scale = Math.min(2, Math.max(0.1, Math.min((r.width - margin * 2) / Math.max(1, b.maxX - b.minX),
-    (r.height - margin * 2) / Math.max(1, b.maxY - b.minY))));
-  state.view = { scale, x: r.width / 2 - ((b.minX + b.maxX) / 2) * scale, y: r.height / 2 - ((b.minY + b.maxY) / 2) * scale };
+  const margin = 48;
+  // Вертикальная панель инструментов слева (на телефоне — снизу) не должна закрывать рисунок.
+  const t = toolbar.getBoundingClientRect();
+  const left = t.height > t.width ? Math.max(margin, t.right - r.left + 16) : margin;
+  const bottom = t.width >= t.height ? Math.max(margin, r.bottom - t.top + 16) : margin;
+  const w = r.width - left - margin, h = r.height - margin - bottom;
+  const scale = Math.min(2, Math.max(0.1, Math.min(w / Math.max(1, b.maxX - b.minX), h / Math.max(1, b.maxY - b.minY))));
+  state.view = { scale, x: left + w / 2 - ((b.minX + b.maxX) / 2) * scale,
+    y: margin + h / 2 - ((b.minY + b.maxY) / 2) * scale };
   state.committedDirty = true;
   invalidate();
 }
@@ -584,13 +591,194 @@ function exportPng() {
   octx.drawImage(ink, 0, 0);
   out.toBlob((blob) => {
     if (!blob) { toast("Не удалось сохранить изображение", "error"); return; }
-    const url = URL.createObjectURL(blob);
-    const name = (document.title.replace(/[\\/:*?"<>|]+/g, " ").trim() || "doska") + ".png";
-    const a = el("a", { href: url, download: name });
-    document.body.append(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    saveBlob(blob, safeFileName($("board-title").textContent) + ".png");
   }, "image/png");
 }
+
+/* Меню «Файл»: выгрузка и загрузка доски */
+const fileBtn = $("file-btn");
+const fileMenu = $("file-menu");
+
+function setMenu(open) {
+  fileMenu.hidden = !open;
+  fileBtn.setAttribute("aria-expanded", String(open));
+  fileBtn.classList.toggle("on", open);
+  if (open) fileMenu.querySelector("button").focus();
+}
+fileBtn.addEventListener("click", () => setMenu(fileMenu.hidden));
+document.addEventListener("pointerdown", (e) => {
+  if (!fileMenu.hidden && !(e.target instanceof Element && e.target.closest(".menu-wrap"))) setMenu(false);
+});
+fileMenu.addEventListener("keydown", (e) => {
+  const items = [...fileMenu.querySelectorAll("button")];
+  const i = items.indexOf(document.activeElement);
+  if (e.key === "Escape") { setMenu(false); fileBtn.focus(); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+});
+
+$("menu-png").addEventListener("click", () => { setMenu(false); exportPng(); });
+
+$("menu-export").addEventListener("click", async () => {
+  setMenu(false);
+  try {
+    const response = await fetch(`/api/v1/boards/${encodeURIComponent(BOARD_ID)}/export`, { cache: "no-store" });
+    if (!response.ok) throw new Error(await apiError(response, "Не удалось выгрузить доску"));
+    const data = await response.json();
+    saveBlob(new Blob([boardFileText(data)], { type: "application/json" }), safeFileName(data.title) + ".doska.json");
+    toast(`Выгружено: ${data.strokes.length} ${strokesWord(data.strokes.length)}`, "ok");
+  } catch (err) {
+    toast(err.message === "Failed to fetch" ? "Сервер недоступен" : err.message, "error");
+  }
+});
+
+$("menu-import").addEventListener("click", () => { setMenu(false); $("import-file").click(); });
+
+$("import-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  let data;
+  try { data = await readBoardFile(file); } catch (err) { toast(err.message, "error"); return; }
+  const n = data.strokes.length;
+  $("import-summary").textContent = `${data.title ? "«" + data.title + "»" : file.name}: ${n} ${strokesWord(n)}. ` +
+    "Добавить к текущему рисунку или заменить его?";
+  const dlg = $("import-dialog");
+  dlg.returnValue = "";
+  dlg.showModal();
+  dlg.addEventListener("close", async () => {
+    const mode = dlg.returnValue;
+    if (mode !== "append" && mode !== "replace") return;
+    state.importing = true;
+    try {
+      const result = await importBoard(BOARD_ID, data, mode);
+      toast(`Загружено: ${result.imported} ${strokesWord(result.imported)}`, "ok");
+      if (state.ready) fitToContent();
+      else toast("Нет связи: рисунок появится после переподключения");
+    } catch (err) {
+      toast(err.message === "Failed to fetch" ? "Сервер недоступен" : err.message, "error");
+    } finally {
+      state.importing = false;
+    }
+  }, { once: true });
+});
+
+function applyImport(msg) {
+  if (msg.replace) {
+    state.strokes = [];
+    state.index.clear();
+    state.pending.clear();
+    state.history = [];
+    state.redo = [];
+    state.committedDirty = true;
+  }
+  for (const s of msg.strokes) addStroke(s);
+  invalidate();
+  syncToolbar();
+  if (!state.importing) toast(`${msg.by} ${msg.replace ? "заменил доску" : "добавил рисунок"} из файла`);
+}
+
+/* ------------------------------------------------------------ чат */
+
+const chat = $("chat");
+const chatList = $("chat-list");
+const chatInput = $("chat-input");
+const chatBtn = $("chat-btn");
+let lastChat = null;
+
+function timeOf(iso) {
+  try { return new Date(iso).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }); } catch { return ""; }
+}
+
+function isMine(m) { return Boolean(state.me && m.tag === state.me.tag); }
+
+function chatNode(m, prev) {
+  const mine = isMine(m);
+  // Подряд идущие сообщения одного автора в пределах 3 минут — без повторной подписи.
+  const grouped = prev && prev.tag === m.tag && prev.name === m.name && Date.parse(m.at) - Date.parse(prev.at) < 180000;
+  const node = el("div", { class: "msg" + (mine ? " mine" : "") + (grouped ? " grouped" : "") },
+    grouped ? null : el("div", { class: "msg-head" },
+      el("span", { class: "msg-name", text: mine ? "Вы" : m.name }),
+      el("time", { class: "msg-time", datetime: m.at, text: timeOf(m.at) })),
+    el("div", { class: "msg-text", text: m.text }));
+  node.style.setProperty("--peer", m.color);
+  return node;
+}
+
+function nearBottom() { return chatList.scrollHeight - chatList.scrollTop - chatList.clientHeight < 48; }
+
+function appendChat(m, count = true) {
+  if (state.chatIds.has(m.id)) return;
+  state.chatIds.add(m.id);
+  const stick = nearBottom() || isMine(m);
+  chatList.append(chatNode(m, lastChat));
+  lastChat = m;
+  $("chat-empty").hidden = true;
+  if (stick) chatList.scrollTop = chatList.scrollHeight;
+  if (count && !isMine(m) && chat.hidden) {
+    state.unread += 1;
+    syncChatBadge();
+    toast(`${m.name}: ${m.text.length > 80 ? m.text.slice(0, 80) + "…" : m.text}`);
+  }
+}
+
+function renderChat(list) {
+  state.chatIds.clear();
+  lastChat = null;
+  chatList.replaceChildren();
+  for (const m of list) appendChat(m, false);
+  $("chat-empty").hidden = list.length > 0;
+  chatList.scrollTop = chatList.scrollHeight;
+}
+
+function syncChatBadge() {
+  const badge = $("chat-badge");
+  badge.hidden = state.unread === 0;
+  badge.textContent = state.unread > 99 ? "99+" : String(state.unread);
+  chatBtn.setAttribute("aria-label", state.unread ? `Чат, непрочитанных: ${state.unread}` : "Чат");
+}
+
+function setChat(open) {
+  chat.hidden = !open;
+  document.body.classList.toggle("chat-open", open);
+  chatBtn.classList.toggle("on", open);
+  chatBtn.setAttribute("aria-expanded", String(open));
+  store.set("chatOpen", open);
+  if (open) {
+    state.unread = 0;
+    syncChatBadge();
+    chatList.scrollTop = chatList.scrollHeight;
+    if (window.matchMedia("(hover: hover)").matches) chatInput.focus();
+  }
+}
+
+function growInput() {
+  chatInput.style.height = "auto";
+  chatInput.style.height = Math.min(chatInput.scrollHeight, 132) + "px";
+}
+
+function sendChat() {
+  const text = chatInput.value.trim();
+  if (!text) return;
+  if (!state.ready) { toast("Нет связи: сообщение не отправлено", "error"); return; }
+  send({ t: "chat", text });
+  chatInput.value = "";
+  growInput();
+}
+
+chatBtn.prepend(icon("chat"));
+chatBtn.addEventListener("click", () => setChat(chat.hidden));
+$("chat-close-slot").replaceWith(ibtn({ icon: "x", tip: "Закрыть чат", tipPos: "left",
+  onclick: () => { setChat(false); chatBtn.focus(); } }));
+const sendBtn = ibtn({ icon: "send", tip: "Отправить", tipPos: "left" });
+sendBtn.type = "submit";
+sendBtn.classList.add("chat-send");
+$("chat-send-slot").replaceWith(sendBtn);
+$("chat-form").addEventListener("submit", (e) => { e.preventDefault(); sendChat(); chatInput.focus(); });
+chatInput.addEventListener("input", growInput);
+chatInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat(); }
+  else if (e.key === "Escape") { setChat(false); chatBtn.focus(); }
+});
 
 function askClear() {
   if (!state.strokes.length) { toast("Доска уже пуста"); return; }
@@ -752,6 +940,12 @@ function handle(msg) {
       state.live.clear();
       if (msg.from !== (state.me && state.me.id)) toast(`${msg.by} очистил доску`);
       break;
+    case "chat":
+      appendChat(msg.message);
+      break;
+    case "import":
+      applyImport(msg);
+      break;
     case "error":
       toast(msg.message || "Ошибка", "error");
       break;
@@ -776,6 +970,8 @@ function onInit(msg) {
   for (const s of unsent) if (!state.index.has(s.id)) { addStroke(s); state.pending.set(s.id, s); send({ t: "stroke", stroke: s }); }
   if (firstLoad) state.history = msg.strokes.filter((s) => s.author === authorKey()).map((s) => s.id);
 
+  renderChat(msg.chat || []);
+
   state.peers.clear();
   $("cursors").replaceChildren();
   for (const p of msg.peers) state.peers.set(p.id, { name: p.name, color: p.color, cursor: null });
@@ -792,6 +988,9 @@ function onInit(msg) {
 
 (function start() {
   $("bar-actions").append(themeButton());
+  fileBtn.append(icon("file"));
+  $("invite-btn").prepend(icon("users"));
+  if (store.get("chatOpen", false)) setChat(true);
   buildToolbar();
   new ResizeObserver(resize).observe(stage);
   resize();

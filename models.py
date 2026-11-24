@@ -34,8 +34,23 @@ class Stroke(SQLModel, table=True):
         sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')))
 
 
+class ChatMessage(SQLModel, table=True):
+    __tablename__ = 'chat_messages'
+    __table_args__ = (sa.Index('ix_chat_messages_board_id_id', 'board_id', 'id'),)
+    id: int | None = Field(default=None, sa_column=sa.Column(sa.BigInteger, primary_key=True, autoincrement=True))
+    board_id: str = Field(sa_column=sa.Column(
+        sa.String(40), sa.ForeignKey('boards.id', ondelete='CASCADE'), nullable=False))
+    author_key: str = Field(sa_column=sa.Column(sa.String(40), nullable=False))
+    # Имя и цвет на момент отправки: участник может переименоваться позже.
+    name: str = Field(sa_column=sa.Column(sa.String(32), nullable=False))
+    color: str = Field(sa_column=sa.Column(sa.String(7), nullable=False))
+    text: str = Field(sa_column=sa.Column(sa.Text, nullable=False))
+    created_at: datetime | None = Field(default=None, sa_column=sa.Column(
+        sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')))
+
+
 metadata = SQLModel.metadata
 
 
 def get_all_schemas():
-    return {'boards': Board, 'strokes': Stroke}
+    return {'boards': Board, 'strokes': Stroke, 'chat_messages': ChatMessage}

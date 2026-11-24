@@ -6,25 +6,55 @@ const createForm = document.getElementById("create-form");
 const createBtn = document.getElementById("create-btn");
 const createError = document.getElementById("create-error");
 
+const fromFileBtn = document.getElementById("from-file-btn");
+const fromFile = document.getElementById("from-file");
+
+async function createBoard(title) {
+  const response = await fetch("/api/v1/boards", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!response.ok) throw new Error(await apiError(response, "Не удалось создать доску"));
+  return response.json();
+}
+
+function showCreateError(err) {
+  createError.textContent = err.message === "Failed to fetch" ? "Сервер недоступен" : err.message;
+  createError.hidden = false;
+  createBtn.disabled = fromFileBtn.disabled = false;
+}
+
 createForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   createError.hidden = true;
-  createBtn.disabled = true;
+  createBtn.disabled = fromFileBtn.disabled = true;
   try {
-    const response = await fetch("/api/v1/boards", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: document.getElementById("title").value }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.message || (response.status === 429
-      ? "Слишком много новых досок, попробуйте через минуту" : "Не удалось создать доску"));
-    rememberBoard(data);
-    location.assign("/b/" + encodeURIComponent(data.id));
+    const board = await createBoard(document.getElementById("title").value);
+    rememberBoard(board);
+    location.assign("/b/" + encodeURIComponent(board.id));
   } catch (err) {
-    createError.textContent = err.message === "Failed to fetch" ? "Сервер недоступен" : err.message;
-    createError.hidden = false;
-    createBtn.disabled = false;
+    showCreateError(err);
+  }
+});
+
+/* Новая доска из выгруженного файла: название из поля или из файла, затем содержимое. */
+fromFileBtn.addEventListener("click", () => fromFile.click());
+fromFile.addEventListener("change", async () => {
+  const file = fromFile.files[0];
+  fromFile.value = "";
+  if (!file) return;
+  createError.hidden = true;
+  createBtn.disabled = fromFileBtn.disabled = true;
+  try {
+    const data = await readBoardFile(file);
+    const title = document.getElementById("title").value.trim() || String(data.title || "").slice(0, 120);
+    const board = await createBoard(title);
+    rememberBoard(board);
+    await importBoard(board.id, data, "replace");
+    location.assign("/b/" + encodeURIComponent(board.id));
+  } catch (err) {
+    showCreateError(err);
   }
 });
 

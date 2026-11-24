@@ -53,6 +53,10 @@ class BoardSettings:
         self.max_message_bytes = _int_env('BOARD_MAX_MESSAGE_BYTES', 262144, 1024, 16 * 1024 * 1024)
         self.creates_per_minute = _int_env('BOARD_CREATES_PER_MINUTE', 20, 1, 10000)
         self.send_queue = _int_env('BOARD_SEND_QUEUE', 2000, 16, 100000)
+        self.chat_history = _int_env('BOARD_CHAT_HISTORY', 200, 1, 1000)   # сколько сообщений видит вошедший
+        self.chat_keep = _int_env('BOARD_CHAT_KEEP', 1000, 1, 100000)      # сколько хранится на доску
+        self.max_import_bytes = _int_env('BOARD_MAX_IMPORT_BYTES', 16 * 1024 * 1024, 1024, 256 * 1024 * 1024)
+        self.imports_per_minute = _int_env('BOARD_IMPORTS_PER_MINUTE', 10, 1, 10000)
         # Разрешённые Origin для WebSocket через запятую (https://board.example.com).
         # Пусто — допускается только тот же хост, что в заголовке Host (тот же сайт).
         self.allowed_origins = {o.strip().rstrip('/').lower()

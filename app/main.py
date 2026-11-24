@@ -10,7 +10,8 @@ from run_infrastructure import start_infrastructure
 from app.scenarios.boards import BOARD_ID_PATTERN
 
 REQUIRED_SCENARIOS = {'boards.create', 'boards.get', 'strokes.list', 'strokes.add', 'strokes.remove',
-                      'strokes.clear', 'service.ready'}
+                      'strokes.clear', 'strokes.import', 'boards.export', 'chat.add', 'chat.list',
+                      'service.ready'}
 FRONTEND = ROOT / 'frontend'
 
 SECURITY_HEADERS = [

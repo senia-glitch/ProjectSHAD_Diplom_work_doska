@@ -186,7 +186,7 @@ input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px 
 
 /* ============================================================ Доска */
 .board-body { height: 100dvh; min-height: 0; overflow: hidden; }
-.board-bar { display: flex; align-items: center; gap: 16px; height: 56px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--bg); flex: none; z-index: 30; }
+.board-bar { position: relative; display: flex; align-items: center; gap: 16px; height: 56px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--bg); flex: none; z-index: 30; }
 .board-title-box { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
 .board-title { font-size: 16px; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .peers { display: flex; align-items: center; flex: none; }
@@ -230,6 +230,58 @@ input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px 
 .board-message { position: absolute; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 70%, transparent); z-index: 25; padding: 16px; }
 .board-message .form-card { max-width: 420px; display: grid; gap: 12px; }
 .board-message h2, .board-message p { margin: 0; }
+
+p.hint { margin: 0; line-height: 1.5; }
+
+/* ---------- Меню «Файл доски» ---------- */
+.menu-wrap { position: relative; }
+.menu { position: absolute; right: 0; top: calc(100% + 8px); min-width: 248px; display: grid; padding: 4px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r-lg); box-shadow: 0 16px 40px rgba(0, 0, 0, .3); z-index: 40; animation: pop .14s ease; }
+.menu button { display: flex; align-items: center; height: var(--ctl); padding: 0 12px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: 14px var(--sans); text-align: left; cursor: pointer; white-space: nowrap; }
+.menu button:hover, .menu button:focus-visible { background: var(--surface-2); outline: none; }
+.menu-wrap .ibtn[aria-expanded="true"]::after { display: none; }
+
+/* ---------- Чат ---------- */
+.board-main { flex: 1; min-height: 0; display: flex; position: relative; }
+.board-main .stage { min-width: 0; }
+.chat-btn { position: relative; }
+.badge { position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font: 600 11px/18px var(--sans); text-align: center; font-variant-numeric: tabular-nums; box-shadow: 0 0 0 2px var(--bg); pointer-events: none; }
+.chat { position: relative; width: 340px; flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--surface); border-left: 1px solid var(--line); z-index: 22; }
+.chat-head { display: flex; align-items: center; gap: 8px; height: 48px; padding: 0 8px 0 16px; border-bottom: 1px solid var(--line); flex: none; }
+.chat-head h2 { margin: 0; font-size: 15px; }
+.chat-list { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 12px 4px; display: flex; flex-direction: column; gap: 2px; outline: none; overscroll-behavior: contain; }
+.chat-empty { position: absolute; top: 45%; left: 16px; right: 16px; margin: 0; text-align: center; font-size: 14px; pointer-events: none; }
+.msg { max-width: 86%; align-self: flex-start; margin-top: 10px; }
+.msg.grouped { margin-top: 2px; }
+.msg-head { display: flex; align-items: baseline; gap: 8px; padding: 0 4px 2px; }
+.msg-name { font-size: 12.5px; font-weight: 600; color: var(--peer); filter: brightness(1.15); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root[data-theme="light"] .msg-name { filter: brightness(.85); }
+.msg-time { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+.msg-text { background: var(--surface-2); padding: 7px 11px; border-radius: 12px; border-top-left-radius: 4px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg.grouped .msg-text { border-top-left-radius: 12px; }
+.msg.mine { align-self: flex-end; }
+.msg.mine .msg-head { justify-content: flex-end; }
+.msg.mine .msg-name { color: var(--muted); filter: none; }
+.msg.mine .msg-text { background: var(--accent-soft); border-top-left-radius: 12px; border-top-right-radius: 4px; }
+.msg.mine.grouped .msg-text { border-top-right-radius: 12px; }
+.chat-form { display: flex; align-items: flex-end; gap: 8px; padding: 12px; border-top: 1px solid var(--line); flex: none; }
+.chat-form textarea { flex: 1; min-width: 0; resize: none; min-height: var(--ctl); max-height: 132px; font: 14px/1.45 var(--sans); color: var(--text); background: transparent; border: 1px solid var(--line-strong); border-radius: var(--r); padding: 7px 12px; }
+.chat-form textarea:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+.chat-send { width: var(--ctl); height: var(--ctl); color: var(--accent); }
+.chat-send[data-tip]::after { top: auto; bottom: calc(100% + 8px); }
+
+.chat-open .toasts { right: 356px; }
+#invite-btn .icon svg { width: 17px; height: 17px; }
+@media (max-width: 480px) {
+  #invite-btn { width: var(--ctl); padding: 0; }
+  #invite-btn .btn-label { display: none; }
+}
+
+@media (max-width: 720px) {
+  .chat { position: absolute; inset: 0; width: auto; border-left: 0; z-index: 26; }
+  .toasts { bottom: 72px; }
+  .chat-open .toasts { right: 16px; bottom: auto; top: 64px; }
+  .header-actions .chat-btn, .header-actions .menu-wrap .ibtn { width: 32px; }
+}
 
 @media (max-width: 720px) {
   .board-bar { gap: 8px; padding: 0 8px; }

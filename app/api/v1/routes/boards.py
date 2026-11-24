@@ -7,7 +7,10 @@ import re
 from typing import Literal
 from urllib.parse import urlsplit
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, Path, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from fastbase import BaseHTTPError
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from core import ConflictError, CoreError, NotFoundError, run
@@ -15,12 +18,14 @@ from core import ConflictError, CoreError, NotFoundError, run
 from app.access import is_allowed, require, role_of
 from app.config import board_settings as cfg
 from app.realtime.hub import KeyedRateLimiter, Peer, RateLimiter, SlowConsumer, hub
-from app.scenarios.boards import (BOARD_ID_PATTERN, KEY_PATTERN, AddStrokeDTO, BoardIdDTO, BoardResponse,
-                                  CreateBoardDTO, RemoveStrokeDTO, StrokeDTO, Tool)
+from app.scenarios.boards import (BOARD_ID_PATTERN, KEY_PATTERN, AddChatDTO, AddStrokeDTO, BoardExport, BoardIdDTO,
+                                  BoardResponse, ChatListDTO, CreateBoardDTO, ImportStrokesDTO, RemoveStrokeDTO,
+                                  StrokeDTO, Tool, author_tag)
 
 router = APIRouter(tags=['boards'])
 log = logging.getLogger('app.board')
 _create_limiter = KeyedRateLimiter(cfg.creates_per_minute)
+_import_limiter = KeyedRateLimiter(cfg.imports_per_minute)
 _BOARD_ID = re.compile(BOARD_ID_PATTERN)
 
 # Коды закрытия WebSocket, которые понимает клиент.
@@ -32,11 +37,24 @@ class TooManyRequests(BaseHTTPError):
     default_code = 4290
 
 
+class PayloadTooLarge(BaseHTTPError):
+    http_status = 413
+    default_code = 4130
+
+
+class BadBoardFile(BaseHTTPError):
+    http_status = 422
+    default_code = 4221
+
+
+def _client(request: Request) -> str:
+    return request.client.host if request.client else 'unknown'
+
+
 @router.post('/boards', status_code=201, response_model=BoardResponse,
              dependencies=[Depends(require('boards.create'))])
 async def create_board(dto: CreateBoardDTO, request: Request):
-    client = request.client.host if request.client else 'unknown'
-    if not _create_limiter.allow(client):
+    if not _create_limiter.allow(_client(request)):
         raise TooManyRequests('Слишком много новых досок, попробуйте через минуту')
     return await run('boards.create', dto)
 
@@ -45,6 +63,58 @@ async def create_board(dto: CreateBoardDTO, request: Request):
             dependencies=[Depends(require('boards.view'))])
 async def get_board(board_id: str = Path(pattern=BOARD_ID_PATTERN)):
     return await run('boards.get', BoardIdDTO(board_id=board_id))
+
+
+@router.get('/boards/{board_id}/export', dependencies=[Depends(require('boards.export'))])
+async def export_board(board_id: str = Path(pattern=BOARD_ID_PATTERN)):
+    """Файл доски в формате JSON: его можно хранить, отправлять и загружать в любую доску."""
+    data: BoardExport = await run('boards.export', BoardIdDTO(board_id=board_id))
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', ' ', data.title).strip() or 'doska'
+    disposition = f"attachment; filename=\"doska.json\"; filename*=UTF-8''{quote(name + '.doska.json')}"
+    return JSONResponse(data.model_dump(mode='json'), headers={'Content-Disposition': disposition,
+                                                                'Cache-Control': 'no-store'})
+
+
+class ImportRequest(BaseModel):
+    mode: Literal['append', 'replace'] = 'append'
+    author: str = Field(pattern=KEY_PATTERN)
+    name: str = Field(default='', max_length=200)
+    board: BoardExport
+
+
+async def _read_limited(request: Request, limit: int) -> bytes:
+    declared = request.headers.get('content-length')
+    if declared and declared.isdigit() and int(declared) > limit:
+        raise PayloadTooLarge(f'Файл больше {limit // (1024 * 1024)} МБ')
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > limit:
+            raise PayloadTooLarge(f'Файл больше {limit // (1024 * 1024)} МБ')
+    return bytes(body)
+
+
+@router.post('/boards/{board_id}/import', dependencies=[Depends(require('boards.import'))])
+async def import_board(request: Request, board_id: str = Path(pattern=BOARD_ID_PATTERN)):
+    """Загрузка файла доски: добавить к содержимому или заменить его. Участники видят результат сразу."""
+    if not _import_limiter.allow(_client(request)):
+        raise TooManyRequests('Слишком много загрузок, попробуйте через минуту')
+    body = await _read_limited(request, cfg.max_import_bytes)
+    try:
+        req = ImportRequest.model_validate_json(body)
+    except ValidationError as exc:
+        first = exc.errors()[0] if exc.errors() else {}
+        where = '.'.join(str(p) for p in first.get('loc', ()))
+        raise BadBoardFile(f'Файл доски не распознан ({where or "формат"})')
+    await run('boards.get', BoardIdDTO(board_id=board_id))  # 404 для несуществующей доски
+    name = HelloMsg(t='hello', author=req.author, name=req.name).name
+    async with hub.exclusive(board_id) as room:
+        result = await run('strokes.import', ImportStrokesDTO(
+            board_id=board_id, author=req.author, replace=req.mode == 'replace', strokes=req.board.strokes,
+            max_strokes=cfg.max_strokes))
+        room.broadcast({'t': 'import', 'replace': result.replace, 'by': name,
+                        'strokes': [s.model_dump() for s in result.items]})
+    return {'imported': len(result.items), 'replace': result.replace}
 
 
 # ---------------------------------------------------------------- WebSocket
@@ -140,6 +210,7 @@ async def board_socket(ws: WebSocket, board_id: str):
     room.broadcast({'t': 'join', 'peer': peer.public()}, exclude=peer)
     sender = asyncio.create_task(_sender(peer))
     limiter = RateLimiter(cfg.messages_per_second, cfg.messages_per_second * 4)
+    chat_limiter = RateLimiter(1, 5)  # чат: в среднем сообщение в секунду, короткая серия до пяти
 
     async def mutate(action):
         """Изменения доски выполняются по одному: БД и рассылка в едином порядке."""
@@ -149,9 +220,12 @@ async def board_socket(ws: WebSocket, board_id: str):
     try:
         async def send_init():
             strokes = await run('strokes.list', BoardIdDTO(board_id=board_id))
-            peer.send({'t': 'init', 'you': peer.public(), 'board': board.model_dump(mode='json'),
+            chat = await run('chat.list', ChatListDTO(board_id=board_id, limit=cfg.chat_history))
+            peer.send({'t': 'init', 'you': {**peer.public(), 'tag': author_tag(peer.author)},
+                       'board': board.model_dump(mode='json'),
                        'peers': [p.public() for p in room.peers.values() if p is not peer],
                        'strokes': [s.model_dump() for s in strokes.items],
+                       'chat': [m.model_dump(mode='json') for m in chat.items],
                        'limits': {'maxStrokes': cfg.max_strokes}})
         await mutate(send_init)
 
@@ -208,6 +282,19 @@ async def board_socket(ws: WebSocket, board_id: str):
                         await run('strokes.clear', BoardIdDTO(board_id=board_id))
                         room.broadcast({'t': 'clear', 'by': peer.name, 'from': peer.id})
                     await mutate(clear)
+
+                elif kind == 'chat':
+                    if not chat_limiter.allow():
+                        peer.send({'t': 'error', 'message': 'Слишком часто: подождите секунду'})
+                        continue
+                    chat_dto = AddChatDTO(board_id=board_id, author=peer.author, name=peer.name, color=peer.color,
+                                          text=msg.get('text'), keep=cfg.chat_keep)
+
+                    async def chat():
+                        saved = await run('chat.add', chat_dto)
+                        # Всем, включая автора: эхо подтверждает, что сообщение сохранено.
+                        room.broadcast({'t': 'chat', 'message': saved.model_dump(mode='json')})
+                    await mutate(chat)
 
                 elif kind == 'rename':
                     name = HelloMsg(t='hello', author=peer.author, name=str(msg.get('name', ''))).name

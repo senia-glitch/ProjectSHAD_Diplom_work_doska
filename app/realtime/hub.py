@@ -6,6 +6,7 @@
 import asyncio
 import json
 import secrets
+from contextlib import asynccontextmanager
 import time
 from dataclasses import dataclass, field
 
@@ -51,6 +52,7 @@ class Room:
         self.peers: dict[str, Peer] = {}
         # Сериализует изменения доски и снимок для входящих: порядок у всех одинаковый.
         self.lock = asyncio.Lock()
+        self.holders = 0  # операции вне WebSocket, которые сейчас держат комнату
 
     def next_color(self):
         used = {p.color for p in self.peers.values()}
@@ -91,8 +93,24 @@ class Hub:
     def leave(self, room: Room, peer: Peer):
         if room.peers.pop(peer.id, None) is not None:
             room.broadcast({'t': 'leave', 'id': peer.id})
-        if not room.peers and self.rooms.get(room.board_id) is room and not room.lock.locked():
+        self._drop_if_idle(room)
+
+    def _drop_if_idle(self, room: Room):
+        if not room.peers and not room.holders and self.rooms.get(room.board_id) is room \
+                and not room.lock.locked():
             del self.rooms[room.board_id]
+
+    @asynccontextmanager
+    async def exclusive(self, board_id: str):
+        """Изменение доски вне WebSocket (загрузка файла) в общем порядке с изменениями участников."""
+        room = self.room(board_id)
+        room.holders += 1
+        try:
+            async with room.lock:
+                yield room
+        finally:
+            room.holders -= 1
+            self._drop_if_idle(room)
 
     def stats(self):
         return {'rooms': len(self.rooms), 'peers': sum(len(r.peers) for r in self.rooms.values())}

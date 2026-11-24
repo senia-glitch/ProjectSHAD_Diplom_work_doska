@@ -132,3 +132,100 @@ def test_socket_rejections(client):
         with pytest.raises(WebSocketDisconnect) as bad:
             ws.receive_json()
         assert bad.value.code == 1008
+
+
+def test_chat_history_and_limits(client):
+    bid = new_board(client)['id']
+    a_ctx, alice = join(client, bid, 'Алиса')
+    try:
+        me = recv_until(alice, 'init')
+        assert me['chat'] == [] and len(me['you']['tag']) == 12
+        b_ctx, bob = join(client, bid, 'Боб')
+        try:
+            recv_until(bob, 'init')
+            alice.send_json({'t': 'chat', 'text': '  привет\r\n\n\n\n\tмир  '})
+            got = recv_until(bob, 'chat')['message']
+            assert got['text'] == 'привет\n\n мир' and got['name'] == 'Алиса' and got['tag'] == me['you']['tag']
+            assert 'author' not in got
+            assert recv_until(alice, 'chat')['message']['id'] == got['id']  # эхо автору
+            for bad in ('   ', 'x' * 1001, 123):
+                alice.send_json({'t': 'chat', 'text': bad})
+                assert recv_until(alice, 'error')
+            for i in range(8):  # серия сверх лимита отклоняется, соединение живо
+                bob.send_json({'t': 'chat', 'text': f'm{i}'})
+            assert 'Слишком часто' in recv_until(bob, 'error')['message']
+            bob.send_json({'t': 'ping'})
+            assert recv_until(bob, 'pong')
+        finally:
+            b_ctx.__exit__(None, None, None)
+    finally:
+        a_ctx.__exit__(None, None, None)
+    c_ctx, carol = join(client, bid, 'Кэрол')
+    try:
+        history = recv_until(carol, 'init')['chat']
+        assert history[0]['text'] == 'привет\n\n мир' and history[1]['name'] == 'Боб'
+        assert [m['id'] for m in history] == sorted(m['id'] for m in history)
+    finally:
+        c_ctx.__exit__(None, None, None)
+
+
+def test_export_and_import(client, monkeypatch):
+    from app.config import board_settings
+
+    source = new_board(client, 'Схема / v1')['id']
+    ctx, alice = join(client, source, 'Алиса')
+    try:
+        recv_until(alice, 'init')
+        for s in (stroke(), stroke('ellipse', (0, 0, 30, 20))):
+            alice.send_json({'t': 'stroke', 'stroke': s})
+            recv_until(alice, 'stroke')
+    finally:
+        ctx.__exit__(None, None, None)
+
+    exported = client.get(f'/api/v1/boards/{source}/export')
+    assert exported.status_code == 200
+    assert "filename*=UTF-8''" in exported.headers['content-disposition']
+    data = exported.json()
+    assert data['format'] == 'doska' and data['version'] == 1 and data['title'] == 'Схема / v1'
+    assert [s['tool'] for s in data['strokes']] == ['pen', 'ellipse'] and 'id' not in data['strokes'][0]
+
+    target = new_board(client)['id']
+    author = key()
+    url = f'/api/v1/boards/{target}/import'
+    ctx, bob = join(client, target, 'Боб')
+    try:
+        recv_until(bob, 'init')
+        bob.send_json({'t': 'stroke', 'stroke': stroke('rect', (5, 5, 9, 9))})
+        recv_until(bob, 'stroke')
+
+        r = client.post(url, json={'mode': 'append', 'author': author, 'name': 'Импорт', 'board': data})
+        assert r.status_code == 200 and r.json() == {'imported': 2, 'replace': False}
+        pushed = recv_until(bob, 'import')
+        assert pushed['replace'] is False and pushed['by'] == 'Импорт' and len(pushed['strokes']) == 2
+        assert pushed['strokes'][0]['author'] == author and pushed['strokes'][1]['tool'] == 'ellipse'
+        assert len(client.get(f'/api/v1/boards/{target}/export').json()['strokes']) == 3
+
+        # Повторная загрузка того же файла: ключи новые, конфликтов нет; замена убирает старое.
+        r = client.post(url, json={'mode': 'replace', 'author': author, 'board': data})
+        assert r.json() == {'imported': 2, 'replace': True}
+        assert recv_until(bob, 'import')['replace'] is True
+        assert len(client.get(f'/api/v1/boards/{target}/export').json()['strokes']) == 2
+
+        # Ошибки не меняют доску.
+        broken = {**data, 'strokes': [{**data['strokes'][0], 'pts': [1, 2, 3]}]}
+        assert client.post(url, json={'author': author, 'board': broken}).status_code == 422
+        assert client.post(url, json={'author': author, 'board': {**data, 'format': 'other'}}).status_code == 422
+        assert client.post(url, content=b'not json').status_code == 422
+        monkeypatch.setattr(board_settings, 'max_strokes', 3)
+        assert client.post(url, json={'author': author, 'board': data}).status_code == 409
+        monkeypatch.setattr(board_settings, 'max_import_bytes', 1024)
+        big = {**data, 'strokes': data['strokes'] * 20}
+        assert client.post(url, json={'mode': 'replace', 'author': author, 'board': big}).status_code == 413
+        assert len(client.get(f'/api/v1/boards/{target}/export').json()['strokes']) == 2
+        bob.send_json({'t': 'ping'})
+        assert recv_until(bob, 'pong')
+    finally:
+        ctx.__exit__(None, None, None)
+    missing = '/api/v1/boards/' + 'z' * 22
+    assert client.post(missing + '/import', json={'author': author, 'board': data}).status_code == 404
+    assert client.get(missing + '/export').status_code == 404

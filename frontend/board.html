@@ -17,10 +17,23 @@
     </div>
     <div class="peers" id="peers" aria-label="Участники"></div>
     <div class="header-actions" id="bar-actions">
-      <button class="btn primary" id="invite-btn" type="button">Пригласить</button>
+      <div class="menu-wrap">
+        <button class="ibtn bordered" id="file-btn" type="button" aria-haspopup="menu" aria-expanded="false"
+                aria-controls="file-menu" aria-label="Файл доски" data-tip="Файл доски" data-tip-pos="left"></button>
+        <div class="menu" id="file-menu" role="menu" hidden>
+          <button type="button" role="menuitem" id="menu-export">Выгрузить доску (.json)</button>
+          <button type="button" role="menuitem" id="menu-import">Загрузить из файла…</button>
+          <button type="button" role="menuitem" id="menu-png">Сохранить картинку (PNG)</button>
+        </div>
+        <input type="file" id="import-file" accept=".json,application/json" hidden>
+      </div>
+      <button class="ibtn bordered chat-btn" id="chat-btn" type="button" aria-controls="chat" aria-expanded="false"
+              aria-label="Чат" data-tip="Чат" data-tip-pos="left"><span class="badge" id="chat-badge" hidden></span></button>
+      <button class="btn primary" id="invite-btn" type="button" aria-label="Пригласить"><span class="btn-label">Пригласить</span></button>
     </div>
   </header>
 
+  <div class="board-main">
   <div class="stage" id="stage">
     <canvas id="canvas" aria-label="Холст доски" role="img"></canvas>
     <div class="cursors" id="cursors" aria-hidden="true"></div>
@@ -38,6 +51,22 @@
         <div class="row"><a class="btn primary" href="/">На главную</a></div>
       </div>
     </div>
+  </div>
+
+  <aside class="chat" id="chat" aria-labelledby="chat-title" hidden>
+    <div class="chat-head">
+      <h2 id="chat-title">Чат</h2>
+      <span class="grow"></span>
+      <span id="chat-close-slot"></span>
+    </div>
+    <div class="chat-list" id="chat-list" role="log" aria-live="polite" aria-relevant="additions" tabindex="0"></div>
+    <p class="chat-empty muted" id="chat-empty">Сообщений пока нет. Напишите первым.</p>
+    <form class="chat-form" id="chat-form" novalidate>
+      <textarea id="chat-input" rows="1" maxlength="1000" placeholder="Сообщение… (Enter — отправить)"
+                aria-label="Сообщение" autocomplete="off"></textarea>
+      <span id="chat-send-slot"></span>
+    </form>
+  </aside>
   </div>
 
   <dialog class="dialog" id="name-dialog" aria-labelledby="name-dialog-title">
@@ -68,6 +97,19 @@
       <div class="row">
         <button class="btn danger" value="clear">Очистить</button>
         <button class="btn ghost" value="cancel" autofocus>Отмена</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="import-dialog" aria-labelledby="import-dialog-title">
+    <form method="dialog">
+      <h2 id="import-dialog-title">Загрузить доску из файла</h2>
+      <p class="muted" id="import-summary"></p>
+      <p class="muted">Изменения сразу увидят все участники.</p>
+      <div class="row">
+        <button class="btn primary" value="append">Добавить к рисунку</button>
+        <button class="btn danger" value="replace">Заменить всё</button>
+        <button class="btn ghost" value="cancel">Отмена</button>
       </div>
     </form>
   </dialog>

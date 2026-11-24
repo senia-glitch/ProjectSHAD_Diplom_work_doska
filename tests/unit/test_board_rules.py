@@ -31,3 +31,36 @@ def test_stroke_validation():
     for bad in ({'pts': [1, 2, 3]}, {'pts': [float('inf'), 0]}, {'tool': 'bomb'}, {'color': 'red'}, {'width': 0}):
         with pytest.raises(ValueError):
             StrokeDTO(**{'id': 'abcdefgh', 'tool': 'pen', 'color': '#000000', 'width': 3, 'pts': [0, 0], **bad})
+
+
+def test_chat_text_cleanup_and_tag():
+    from app.scenarios.boards import AddChatDTO, author_tag, clean_chat_text
+    assert clean_chat_text(' a\x00b \r\n\n\n\nc\t') == 'ab\n\nc'
+    assert author_tag('abcdefgh') == author_tag('abcdefgh') != author_tag('abcdefgi')
+    base = {'board_id': 'b' * 22, 'author': 'abcdefgh', 'name': 'A', 'color': '#112233', 'keep': 10}
+    assert AddChatDTO(**base, text=' hi ').text == 'hi'
+    for bad in ('  \n ', 'x' * 1001):
+        with pytest.raises(ValueError):
+            AddChatDTO(**base, text=bad)
+
+
+def test_board_file_validation():
+    from app.scenarios.boards import BoardExport
+    ok = BoardExport.model_validate({'format': 'doska', 'version': 1, 'title': ' A  B ',
+                                     'strokes': [{'tool': 'line', 'color': '#000000', 'width': 2, 'pts': [0, 0, 1, 1]}]})
+    assert ok.title == 'A B' and ok.strokes[0].tool == 'line'
+    for bad in ({'format': 'x'}, {'version': 2}, {'strokes': [{'tool': 'pen'}]}):
+        with pytest.raises(ValueError):
+            BoardExport.model_validate({'format': 'doska', 'version': 1, **bad})
+
+
+def test_hub_exclusive_releases_room():
+    import asyncio
+    from app.realtime.hub import Hub
+
+    async def scenario():
+        hub = Hub()
+        async with hub.exclusive('x' * 22) as room:
+            assert room.lock.locked() and hub.rooms
+        assert not hub.rooms
+    asyncio.run(scenario())

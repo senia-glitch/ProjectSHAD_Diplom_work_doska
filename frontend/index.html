@@ -29,7 +29,12 @@
             <input type="text" id="title" name="title" maxlength="120" autocomplete="off" placeholder="Например, План спринта">
           </label>
           <p class="error-text" id="create-error" hidden></p>
-          <div class="row"><button class="btn primary" id="create-btn" type="submit">Создать доску</button></div>
+          <div class="row">
+            <button class="btn primary" id="create-btn" type="submit">Создать доску</button>
+            <button class="btn ghost" id="from-file-btn" type="button">Из файла…</button>
+            <input type="file" id="from-file" accept=".json,application/json" hidden>
+          </div>
+          <p class="hint">Файл доски (.doska.json) выгружается на доске через меню «Файл доски».</p>
         </form>
       </section>
       <section class="form-card" aria-labelledby="join-title">

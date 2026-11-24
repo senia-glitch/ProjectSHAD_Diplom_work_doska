@@ -7,6 +7,8 @@ scenarios = [
   "boards.create",
   "boards.view",
   "boards.collaborate",
+  "boards.export",
+  "boards.import",
   "service.health",
   "service.ready",
 ]

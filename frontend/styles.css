@@ -270,6 +270,29 @@ p.hint { margin: 0; line-height: 1.5; }
 .chat-send[data-tip]::after { top: auto; bottom: calc(100% + 8px); }
 
 .chat-open .toasts { right: 356px; }
+
+/* ---------- Индикаторы: заполненность, участники, сохранение, чат ---------- */
+[data-level="ok"] { --level: var(--accent); }
+[data-level="amber"] { --level: var(--amber); }
+[data-level="red"] { --level: var(--danger); }
+.meter { display: inline-flex; align-items: center; gap: 8px; flex: none; height: 28px; padding: 0 10px; border-radius: 999px; background: var(--surface-2); font: 500 12.5px var(--sans); color: var(--muted); font-variant-numeric: tabular-nums; }
+.meter-bar { width: 64px; height: 6px; border-radius: 999px; background: color-mix(in srgb, var(--muted) 25%, transparent); overflow: hidden; }
+.meter-fill { display: block; height: 100%; width: var(--fill, 0%); background: var(--level); border-radius: inherit; transition: width .3s var(--ease); }
+.meter-value { min-width: 32px; text-align: right; }
+.meter[data-level="amber"] .meter-value, .meter[data-level="red"] .meter-value { color: var(--level); }
+.peer-count { flex: none; font: 500 12.5px var(--sans); color: var(--muted); font-variant-numeric: tabular-nums; margin-left: -8px; }
+.peer-count[data-level="amber"], .peer-count[data-level="red"] { color: var(--level); }
+.saved-state { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.saved-state.pending { color: var(--amber); }
+.avatar.creator { box-shadow: 0 0 0 2px var(--amber); }
+.code-value { font: 600 16px ui-monospace, "Cascadia Mono", Consolas, monospace !important; letter-spacing: .12em; }
+.chat-meter { font: 500 12px var(--sans); color: var(--muted); padding: 2px 8px; border-radius: 999px; background: var(--surface-2); font-variant-numeric: tabular-nums; }
+.chat-meter[data-level="amber"] { color: var(--amber); background: var(--amber-soft); }
+.chat-form { position: relative; }
+.chat-count { position: absolute; right: 60px; top: -10px; font: 500 11.5px var(--sans); padding: 1px 6px; border-radius: 6px; background: var(--surface); color: var(--level); border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+#code-input { text-transform: uppercase; letter-spacing: .08em; }
+@media (max-width: 960px) { .saved-state { display: none; } }
+@media (max-width: 720px) { .meter-bar { display: none; } .meter { padding: 0 8px; } .peer-count { display: none; } }
 #invite-btn .icon svg { width: 17px; height: 17px; }
 @media (max-width: 480px) {
   #invite-btn { width: var(--ctl); padding: 0; }

@@ -12,14 +12,19 @@ class Board(SQLModel, table=True):
     title: str = Field(sa_column=sa.Column(sa.String(120), nullable=False, server_default=''))
     created_at: datetime | None = Field(default=None, sa_column=sa.Column(
         sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')))
+    # Хеш кода входа (scrypt). NULL — доска из версии без кодов: войти на неё нельзя.
+    code_hash: str | None = Field(default=None, sa_column=sa.Column(sa.String(200), nullable=True))
+    creator_key: str | None = Field(default=None, sa_column=sa.Column(sa.String(40), nullable=True))
+    # Последняя активность: по ней удаляются заброшенные доски.
+    last_active_at: datetime | None = Field(default=None, sa_column=sa.Column(
+        sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()'), index=True))
+    saved_at: datetime | None = Field(default=None, sa_column=sa.Column(sa.DateTime(timezone=True), nullable=True))
 
 
 class Stroke(SQLModel, table=True):
     __tablename__ = 'strokes'
-    __table_args__ = (
-        sa.UniqueConstraint('board_id', 'stroke_key', name='uq_strokes_board_key'),
-        sa.Index('ix_strokes_board_id_id', 'board_id', 'id'),
-    )
+    # Снимок доски: строки целиком перезаписываются автосохранением, порядок — по id.
+    __table_args__ = (sa.Index('ix_strokes_board_id_id', 'board_id', 'id'),)
     id: int | None = Field(default=None, sa_column=sa.Column(sa.BigInteger, primary_key=True, autoincrement=True))
     board_id: str = Field(sa_column=sa.Column(
         sa.String(40), sa.ForeignKey('boards.id', ondelete='CASCADE'), nullable=False))

@@ -28,13 +28,18 @@
           <label>Название <span class="hint">необязательно</span>
             <input type="text" id="title" name="title" maxlength="120" autocomplete="off" placeholder="Например, План спринта">
           </label>
+          <label>Код входа <span class="hint">необязательно — иначе сгенерируется</span>
+            <input type="text" id="new-code" name="code" maxlength="64" autocomplete="off" spellcheck="false"
+                   placeholder="4–32 буквы или цифры">
+          </label>
           <p class="error-text" id="create-error" hidden></p>
           <div class="row">
             <button class="btn primary" id="create-btn" type="submit">Создать доску</button>
             <button class="btn ghost" id="from-file-btn" type="button">Из файла…</button>
             <input type="file" id="from-file" accept=".json,application/json" hidden>
           </div>
-          <p class="hint">Файл доски (.doska.json) выгружается на доске через меню «Файл доски».</p>
+          <p class="hint">Войти на доску можно только по ссылке и коду. Файл доски (.doska.json) выгружается
+            на доске через меню «Файл доски».</p>
         </form>
       </section>
       <section class="form-card" aria-labelledby="join-title">
@@ -42,6 +47,9 @@
         <form id="join-form" novalidate>
           <label>Ссылка на доску
             <input type="text" id="join-link" name="link" autocomplete="off" placeholder="http://…/b/…">
+          </label>
+          <label>Код доски
+            <input type="text" id="join-code" name="code" maxlength="64" autocomplete="off" spellcheck="false">
           </label>
           <p class="error-text" id="join-error" hidden></p>
           <div class="row"><button class="btn" type="submit">Открыть</button></div>

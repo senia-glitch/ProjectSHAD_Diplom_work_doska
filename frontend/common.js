@@ -93,6 +93,20 @@ function authorKey() {
   return key;
 }
 
+/* Коды досок хранятся только в этом браузере: повторный вход без ввода кода. */
+function knownCode(boardId) { return (store.get("codes", {}) || {})[boardId] || ""; }
+function rememberCode(boardId, code) {
+  if (!code) return;
+  const codes = store.get("codes", {}) || {};
+  codes[boardId] = code;
+  store.set("codes", codes);
+}
+function forgetCode(boardId) {
+  const codes = store.get("codes", {}) || {};
+  delete codes[boardId];
+  store.set("codes", codes);
+}
+
 function rememberBoard(board) {
   const list = (store.get("recent", []) || []).filter((b) => b && b.id !== board.id);
   list.unshift({ id: board.id, title: board.title || "", ts: Date.now() });
@@ -136,11 +150,16 @@ async function copyText(text) {
 
 const BOARD_FILE_MAX_BYTES = 16 * 1024 * 1024;
 
+/* Ошибки fastbase: {success: false, error: {message, details}}; для 422 — первая ошибка поля. */
 async function apiError(response, fallback) {
   const data = await response.json().catch(() => ({}));
+  const error = data.error || {};
   if (response.status === 413) return "Файл слишком большой";
-  if (response.status === 429) return data.message || "Слишком много запросов, попробуйте через минуту";
-  return data.message || fallback;
+  if (response.status === 422 && Array.isArray(error.details) && error.details[0] && error.details[0].msg) {
+    return String(error.details[0].msg).replace(/^Value error, /, "");
+  }
+  if (response.status === 429) return error.message || "Слишком много запросов, попробуйте через минуту";
+  return error.message || data.message || fallback;
 }
 
 /* Читает и проверяет файл доски; бросает Error с понятным сообщением. */
@@ -154,11 +173,11 @@ async function readBoardFile(file) {
   return data;
 }
 
-async function importBoard(boardId, data, mode) {
+async function importBoard(boardId, data, mode, code) {
   const response = await fetch(`/api/v1/boards/${encodeURIComponent(boardId)}/import`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode, author: authorKey(), name: store.get("name", "") || "", board: data }),
+    body: JSON.stringify({ mode, code, author: authorKey(), name: store.get("name", "") || "", board: data }),
   });
   if (!response.ok) throw new Error(await apiError(response, "Не удалось загрузить файл"));
   return response.json();

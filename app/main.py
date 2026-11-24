@@ -1,17 +1,24 @@
+import asyncio
+import logging
+
 from app.config import ROOT
 from contextlib import asynccontextmanager
-from core import ScenarioRegistry, shutdown_core, start_core
+from core import ScenarioRegistry, run, shutdown_core, start_core
 from fastapi import Path
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastbase import make_app, start
 from run_infrastructure import start_infrastructure
 
-from app.scenarios.boards import BOARD_ID_PATTERN
+from app.config import board_settings
+from app.realtime.hub import hub
+from app.scenarios.boards import BOARD_ID_PATTERN, CleanupDTO
 
-REQUIRED_SCENARIOS = {'boards.create', 'boards.get', 'strokes.list', 'strokes.add', 'strokes.remove',
-                      'strokes.clear', 'strokes.import', 'boards.export', 'chat.add', 'chat.list',
-                      'service.ready'}
+log = logging.getLogger('app.main')
+
+REQUIRED_SCENARIOS = {'boards.create', 'boards.access', 'boards.load', 'boards.save', 'boards.touch',
+                      'boards.cleanup', 'service.ready'}
+CLEANUP_EVERY_SECONDS = 3600
 FRONTEND = ROOT / 'frontend'
 
 SECURITY_HEADERS = [
@@ -44,6 +51,18 @@ class SecurityHeaders:
         await self.app(scope, receive, wrapped)
 
 
+async def _cleanup_loop():
+    """Удаление досок, на которые не заходили BOARD_RETENTION_DAYS дней."""
+    while True:
+        try:
+            removed = await run('boards.cleanup', CleanupDTO(days=board_settings.retention_days))
+            if removed.count:
+                log.info('removed %s abandoned boards', removed.count)
+        except Exception:
+            log.exception('cleanup failed')
+        await asyncio.sleep(CLEANUP_EVERY_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app):
     router = await start_infrastructure()
@@ -51,7 +70,14 @@ async def lifespan(app):
         await start_core(router=router, discover='app.scenarios')
         if not REQUIRED_SCENARIOS.issubset(set(ScenarioRegistry.list_scenarios())):
             raise RuntimeError('Required scenarios were not discovered')
-        yield
+        tasks = [asyncio.create_task(hub.autosave_loop(board_settings.autosave_minutes * 60)),
+                 asyncio.create_task(_cleanup_loop())]
+        try:
+            yield
+        finally:
+            for task in tasks:
+                task.cancel()
+            await hub.shutdown()  # сохранить открытые доски до остановки ядра и БД
     finally:
         try:
             await shutdown_core()

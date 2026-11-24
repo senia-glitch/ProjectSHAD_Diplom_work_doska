@@ -1,18 +1,50 @@
 # Сервер в интернете: docker compose -f compose.yaml -f compose.prod.yaml ...
-# Приложение слушает только 127.0.0.1:${APP_PORT}; наружу его отдаёт nginx с HTTPS (deploy/nginx.conf).
+#
+# Процессы-шарды: каждая доска живёт в памяти ровно одного процесса. nginx выбирает процесс
+# по hash(board_id) (deploy/nginx.conf), поэтому все участники доски попадают в один процесс,
+# а разные доски распределяются по процессам. Шарды — app (APP_PORT) и app-2 (APP_PORT_2).
+# Чтобы добавить шард: скопируйте app-2 как app-3 с портом APP_PORT_3 и добавьте его в upstream nginx.
+# Менять число шардов — только с перезапуском всех шардов (при остановке они сохраняют доски).
+x-shard: &shard
+  image: doska-app:prod
+  restart: unless-stopped
+  depends_on:
+    db:
+      condition: service_healthy
+  env_file: .env
+  # При остановке процесс сохраняет все открытые доски: даём на это время.
+  stop_grace_period: 30s
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+    interval: 5s
+    timeout: 3s
+    retries: 15
+
+x-shard-env: &shard-env
+  DB_HOST: db
+  DB_PORT: "5432"
+  FAT_HOST: 0.0.0.0
+  FAT_PORT: "8000"
+  # Один процесс на контейнер: доски хранятся в памяти процесса, воркеры их не делят.
+  FAT_WORKERS: "1"
+  # Порт доступен только с хоста, единственный клиент — nginx.
+  # Доверяем его X-Forwarded-For, чтобы лимиты считались по реальному адресу посетителя.
+  FORWARDED_ALLOW_IPS: "*"
+  FAT_LOG_LEVEL: info
+
 services:
   db:
     restart: unless-stopped
   app:
+    <<: *shard
     build:
       context: .
       target: runtime
-    image: doska-app:prod
-    restart: unless-stopped
-    environment:
-      # Порт приложения доступен только с хоста, единственный клиент — nginx.
-      # Доверяем его X-Forwarded-For, чтобы лимиты считались по реальному адресу посетителя.
-      FORWARDED_ALLOW_IPS: "*"
-      FAT_LOG_LEVEL: info
+    environment: *shard-env
+  app-2:
+    <<: *shard
+    environment: *shard-env
+    ports:
+      - "127.0.0.1:${APP_PORT_2:-18091}:8000"
   migrate:
     image: doska-app:prod

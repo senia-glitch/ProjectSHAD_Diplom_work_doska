@@ -15,8 +15,7 @@ const TOOLS = [
   { id: "hand", icon: "hand", tip: "Перемещение (H, пробел)", key: "h" },
 ];
 const MAX_PEN_VALUES = 3998;       // сервер принимает до 8000 чисел; длинный штрих делится на части
-const FLUSH_MS = 40;               // как часто отправлять живые точки
-const CURSOR_MS = 50;
+const CURSOR_MS = 100;             // курсор не чаще 10 раз в секунду; сервер рассылает пачками
 
 const $ = (id) => document.getElementById(id);
 const stage = $("stage");
@@ -34,12 +33,15 @@ const state = {
   strokes: [],                 // подтверждённые и собственные отправленные, в порядке сервера
   index: new Map(),            // id -> штрих
   pending: new Map(),          // свои отправленные без подтверждения: id -> штрих
-  live: new Map(),             // чужие незаконченные: "peer:id" -> штрих
   mine: null,                  // свой текущий штрих
   history: [],                 // свои id для отмены
   redo: [],
   peers: new Map(),            // id -> {name, color, cursor, node}
   me: null,
+  limits: {},
+  savedAt: null,
+  unsaved: false,
+  code: "",
   chatIds: new Set(),
   unread: 0,
   importing: false,
@@ -111,19 +113,71 @@ function setWidth(w) { state.width = w; store.set("width", w); syncToolbar(); }
 function initials(name) { return (name || "?").trim().slice(0, 1).toUpperCase() || "?"; }
 
 function renderPeers() {
+  if (state.limits.maxPeers) setTimeout(renderMeters);
   const box = $("peers");
   const list = [];
   if (state.me) list.push({ ...state.me, self: true });
   for (const [id, p] of state.peers) list.push({ id, ...p });
   const shown = list.slice(0, 6);
   box.replaceChildren(...shown.map((p) => {
-    const label = p.self ? `${p.name} (вы) — изменить имя` : p.name;
-    const node = el(p.self ? "button" : "span", { class: "avatar" + (p.self ? " self" : ""), "data-tip": label,
+    const label = (p.self ? `${p.name} (вы) — изменить имя` : p.name) + (p.creator ? " · создатель доски" : "");
+    const node = el(p.self ? "button" : "span", { class: "avatar" + (p.self ? " self" : "") + (p.creator ? " creator" : ""), "data-tip": label,
       "aria-label": label, type: p.self ? "button" : null, onclick: p.self ? askName : null, text: initials(p.name) });
     node.style.setProperty("--peer", p.color);
     return node;
   }), ...(list.length > shown.length ? [el("span", { class: "avatar more", text: "+" + (list.length - shown.length),
     "data-tip": list.slice(6).map((p) => p.name).join(", ") })] : []));
+}
+
+/* Индикаторы: участники N/15, заполненность доски, сохранение */
+function fmt(n) { return n.toLocaleString("ru-RU"); }
+
+function meterLevel(ratio) { return ratio >= 0.9 ? "red" : ratio >= 0.7 ? "amber" : "ok"; }
+
+function boardUsage() {
+  let values = 0;
+  for (const s of state.strokes) values += s.pts.length;
+  return { strokes: state.strokes.length, values };
+}
+
+function renderMeters() {
+  const lim = state.limits;
+  if (!lim.maxStrokes) return;
+  const u = boardUsage();
+  const ratio = Math.max(u.strokes / lim.maxStrokes, u.values / lim.maxValues);
+  const pct = Math.min(100, Math.round(ratio * 100));
+  const meter = $("board-meter");
+  meter.hidden = false;
+  meter.dataset.level = meterLevel(ratio);
+  meter.style.setProperty("--fill", Math.max(2, pct) + "%");
+  $("board-meter-value").textContent = pct + "%";
+  const tip = `Заполнено ${pct}%: штрихов ${fmt(u.strokes)} из ${fmt(lim.maxStrokes)}, ` +
+    `объём ${Math.round(u.values / lim.maxValues * 100)}%`;
+  meter.dataset.tip = tip;
+  meter.setAttribute("aria-label", tip);
+  const peers = state.peers.size + (state.me ? 1 : 0);
+  const count = $("peer-count");
+  count.hidden = false;
+  count.textContent = `${peers}/${lim.maxPeers}`;
+  count.dataset.level = meterLevel(peers / lim.maxPeers);
+  count.dataset.tip = `Участников ${peers} из ${lim.maxPeers}`;
+  renderChatMeter();
+}
+
+function markChanged() {
+  state.unsaved = true;
+  renderSaved();
+}
+
+function renderSaved() {
+  const box = $("saved-state");
+  if (!state.limits.autosaveMinutes) return;
+  box.hidden = false;
+  const at = state.savedAt ? new Date(state.savedAt) : null;
+  const time = at ? at.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "";
+  box.textContent = state.unsaved ? "Есть несохранённые изменения" : at ? `Сохранено в ${time}` : "Пока не сохранялась";
+  box.dataset.tip = `Сервер сохраняет доску каждые ${state.limits.autosaveMinutes} мин и когда все выходят`;
+  box.classList.toggle("pending", state.unsaved);
 }
 
 /* Курсоры других участников */
@@ -229,7 +283,6 @@ function frame() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(committed, 0, 0);
   applyView(ctx);
-  for (const s of state.live.values()) drawStroke(ctx, s);
   if (state.mine) drawStroke(ctx, state.mine);
   updateGrid();
   placeCursors();
@@ -251,7 +304,14 @@ function addStroke(s) {
   state.index.set(s.id, s);
   appendCommitted(s);
   invalidate();
+  scheduleMeters();
   return true;
+}
+
+let metersTimer = null;
+function scheduleMeters() {      // пересчёт индикаторов не чаще 4 раз в секунду
+  markChanged();
+  if (!metersTimer) metersTimer = setTimeout(() => { metersTimer = null; renderMeters(); }, 250);
 }
 
 function removeStroke(id) {
@@ -261,6 +321,7 @@ function removeStroke(id) {
   state.strokes.splice(state.strokes.indexOf(s), 1);
   state.committedDirty = true;
   invalidate();
+  scheduleMeters();
   return s;
 }
 
@@ -273,6 +334,7 @@ function clearStrokes() {
   state.committedDirty = true;
   invalidate();
   syncToolbar();
+  scheduleMeters();
 }
 
 function commitMine(s) {
@@ -309,7 +371,8 @@ const pointers = new Map();
 let gesture = null;            // {type:'draw'|'pan'|'pinch', ...}
 let spaceDown = false;
 let lastCursorSent = 0;
-let flushTimer = null;
+let cursorTimer = null;
+let cursorPending = null;
 
 function toWorld(clientX, clientY) {
   const r = canvas.getBoundingClientRect();
@@ -340,9 +403,7 @@ canvas.addEventListener("pointerdown", (e) => {
   state.mine = { id: randomKey(), tool, color: tool === "eraser" ? "#000000" : state.color,
     width: tool === "eraser" ? Math.max(12, state.width * 3) : state.width,
     pts: tool === "pen" || tool === "eraser" ? [round1(p.x), round1(p.y)] : [round1(p.x), round1(p.y), round1(p.x), round1(p.y)] };
-  state.mine.sent = 0;
   gesture = { type: "draw", shift: e.shiftKey };
-  flushTimer = setInterval(flushLive, FLUSH_MS);
   invalidate();
 });
 
@@ -392,7 +453,6 @@ canvas.addEventListener("pointermove", (e) => {
           }
         }
         s.pts[2] = round1(x); s.pts[3] = round1(y);
-        s.changed = true;
       }
     }
     invalidate();
@@ -414,34 +474,19 @@ function endPointer(e) {
 }
 canvas.addEventListener("pointerup", endPointer);
 canvas.addEventListener("pointercancel", endPointer);
-canvas.addEventListener("pointerleave", () => send({ t: "cursor", x: null, y: null }));
+canvas.addEventListener("pointerleave", () => { cursorPending = { t: "cursor", x: null, y: null }; flushCursor(); });
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
 function strokePayload(s) { return { id: s.id, tool: s.tool, color: s.color, width: s.width, pts: s.pts }; }
 
-function flushLive() {
-  const s = state.mine;
-  if (!s) return;
-  if (s.tool === "pen" || s.tool === "eraser") {
-    if (s.pts.length <= s.sent) return;
-    // Первый пакет — с начала; дальше только новые точки, у получателя они дописываются.
-    send({ t: "draw", ...strokePayload(s), pts: s.pts.slice(s.sent), replace: false });
-    s.sent = s.pts.length;
-  } else if (s.changed) {
-    s.changed = false;
-    send({ t: "draw", ...strokePayload(s), replace: true });
-  }
-}
-
+/* Штрих рисуется локально и уходит на сервер одним сообщением после отпускания. */
 function finishMine(cancelled) {
-  clearInterval(flushTimer);
   const s = state.mine;
   state.mine = null;
   if (!s) return;
   const degenerate = s.pts.length >= 4 && s.tool !== "pen" && s.tool !== "eraser"
     && Math.hypot(s.pts[2] - s.pts[0], s.pts[3] - s.pts[1]) < 1;
   if (cancelled || degenerate) {
-    send({ t: "draw", ...strokePayload(s), pts: [], replace: true });
     invalidate();
     return;
   }
@@ -453,28 +498,34 @@ function finishMine(cancelled) {
 function splitMine() {
   // Длинная линия делится на последовательные штрихи без разрыва.
   const s = state.mine;
-  flushLive();
   const lastX = s.pts[s.pts.length - 2], lastY = s.pts[s.pts.length - 1];
   state.redo = [];
   commitMine(strokePayload(s));
-  state.mine = { ...s, id: randomKey(), pts: [lastX, lastY], sent: 0 };
+  state.mine = { ...s, id: randomKey(), pts: [lastX, lastY] };
 }
 
 function cancelMine() {
   if (!state.mine) return;
-  clearInterval(flushTimer);
-  send({ t: "draw", ...strokePayload(state.mine), pts: [], replace: true });
   state.mine = null;
   gesture = null;
   invalidate();
 }
 
 function sendCursor(e) {
-  const now = performance.now();
-  if (now - lastCursorSent < CURSOR_MS) return;
-  lastCursorSent = now;
   const p = toWorld(e.clientX, e.clientY);
-  send({ t: "cursor", x: round1(p.x), y: round1(p.y) });
+  cursorPending = { t: "cursor", x: round1(p.x), y: round1(p.y) };
+  const wait = CURSOR_MS - (performance.now() - lastCursorSent);
+  if (wait <= 0) flushCursor();
+  else if (!cursorTimer) cursorTimer = setTimeout(flushCursor, wait); // последняя позиция не теряется
+}
+
+function flushCursor() {
+  clearTimeout(cursorTimer);
+  cursorTimer = null;
+  if (!cursorPending) return;
+  lastCursorSent = performance.now();
+  send(cursorPending);
+  cursorPending = null;
 }
 
 /* Масштаб и панорама */
@@ -622,9 +673,10 @@ $("menu-png").addEventListener("click", () => { setMenu(false); exportPng(); });
 $("menu-export").addEventListener("click", async () => {
   setMenu(false);
   try {
-    const response = await fetch(`/api/v1/boards/${encodeURIComponent(BOARD_ID)}/export`, { cache: "no-store" });
-    if (!response.ok) throw new Error(await apiError(response, "Не удалось выгрузить доску"));
-    const data = await response.json();
+    if (!state.ready) throw new Error("Нет связи: дождитесь подключения");
+    const title = $("board-title").textContent;
+    const data = { format: "doska", version: 1, title, exported_at: new Date().toISOString(),
+      strokes: state.strokes.map((s) => ({ tool: s.tool, color: s.color, width: s.width, pts: s.pts })) };
     saveBlob(new Blob([boardFileText(data)], { type: "application/json" }), safeFileName(data.title) + ".doska.json");
     toast(`Выгружено: ${data.strokes.length} ${strokesWord(data.strokes.length)}`, "ok");
   } catch (err) {
@@ -650,7 +702,7 @@ $("import-file").addEventListener("change", async (e) => {
     if (mode !== "append" && mode !== "replace") return;
     state.importing = true;
     try {
-      const result = await importBoard(BOARD_ID, data, mode);
+      const result = await importBoard(BOARD_ID, data, mode, state.code);
       toast(`Загружено: ${result.imported} ${strokesWord(result.imported)}`, "ok");
       if (state.ready) fitToContent();
       else toast("Нет связи: рисунок появится после переподключения");
@@ -674,6 +726,7 @@ function applyImport(msg) {
   for (const s of msg.strokes) addStroke(s);
   invalidate();
   syncToolbar();
+  scheduleMeters();
   if (!state.importing) toast(`${msg.by} ${msg.replace ? "заменил доску" : "добавил рисунок"} из файла`);
 }
 
@@ -713,6 +766,7 @@ function appendChat(m, count = true) {
   chatList.append(chatNode(m, lastChat));
   lastChat = m;
   $("chat-empty").hidden = true;
+  if (count) renderChatMeter();
   if (stick) chatList.scrollTop = chatList.scrollHeight;
   if (count && !isMine(m) && chat.hidden) {
     state.unread += 1;
@@ -721,12 +775,34 @@ function appendChat(m, count = true) {
   }
 }
 
+function renderChatMeter() {
+  const keep = state.limits.chatKeep;
+  if (!keep) return;
+  const n = state.chatIds.size;
+  const meter = $("chat-meter");
+  meter.hidden = false;
+  meter.textContent = `${Math.min(n, keep)}/${keep}`;
+  meter.dataset.level = n >= keep ? "amber" : "ok";
+  meter.dataset.tip = n >= keep ? `История заполнена: хранятся последние ${keep} сообщений, старые удаляются`
+    : `В истории хранятся последние ${keep} сообщений`;
+}
+
+function renderInputCounter() {
+  const max = state.limits.chatMaxChars || 1000;
+  const n = chatInput.value.length;
+  const counter = $("chat-count");
+  counter.hidden = n < max * 0.8;
+  counter.textContent = `${n}/${max}`;
+  counter.dataset.level = n >= max ? "red" : "amber";
+}
+
 function renderChat(list) {
   state.chatIds.clear();
   lastChat = null;
   chatList.replaceChildren();
   for (const m of list) appendChat(m, false);
   $("chat-empty").hidden = list.length > 0;
+  renderChatMeter();
   chatList.scrollTop = chatList.scrollHeight;
 }
 
@@ -763,6 +839,7 @@ function sendChat() {
   send({ t: "chat", text });
   chatInput.value = "";
   growInput();
+  renderInputCounter();
 }
 
 chatBtn.prepend(icon("chat"));
@@ -774,7 +851,7 @@ sendBtn.type = "submit";
 sendBtn.classList.add("chat-send");
 $("chat-send-slot").replaceWith(sendBtn);
 $("chat-form").addEventListener("submit", (e) => { e.preventDefault(); sendChat(); chatInput.focus(); });
-chatInput.addEventListener("input", growInput);
+chatInput.addEventListener("input", () => { growInput(); renderInputCounter(); });
 chatInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat(); }
   else if (e.key === "Escape") { setChat(false); chatBtn.focus(); }
@@ -788,29 +865,58 @@ function askClear() {
   dlg.addEventListener("close", () => { if (dlg.returnValue === "clear") send({ t: "clear" }); }, { once: true });
 }
 
-function askName() {
+/* Диалог входа: имя и код. При переименовании поле кода скрыто. */
+function askJoin(error = "", wait = 0) {
   const dlg = $("name-dialog");
-  const input = $("name-input");
-  input.value = store.get("name", "") || "";
-  dlg.showModal();
-  input.select();
+  const joining = !state.me;
+  $("name-dialog-title").textContent = joining ? "Вход на доску" : "Как вас подписать?";
+  $("code-field").hidden = !joining;
+  $("name-input").value = store.get("name", "") || "";
+  $("code-input").value = joining ? (state.code || "") : "";
+  $("code-input").required = joining;
+  const err = $("join-error");
+  err.textContent = error;
+  err.hidden = !error;
+  const submit = $("join-submit");
+  submit.textContent = joining ? "Войти" : "Сохранить";
+  clearInterval(askJoin.timer);
+  submit.disabled = false;
+  if (wait > 0) {                 // блокировка после неверных кодов: обратный отсчёт
+    let left = wait;
+    submit.disabled = true;
+    const tick = () => {
+      err.textContent = `Слишком много неверных кодов. Повторите через ${left} с`;
+      if (left-- <= 0) { clearInterval(askJoin.timer); submit.disabled = false; err.textContent = "Можно повторить вход"; }
+    };
+    tick();
+    askJoin.timer = setInterval(tick, 1000);
+  }
+  if (!dlg.open) dlg.showModal();
+  (joining && store.get("name") ? $("code-input") : $("name-input")).focus();
 }
-$("name-form").addEventListener("submit", () => {
+const askName = () => askJoin();
+
+$("name-form").addEventListener("submit", (e) => {
   const name = $("name-input").value.trim().slice(0, 32) || "Гость";
   store.set("name", name);
-  if (state.me) { state.me.name = name; renderPeers(); send({ t: "rename", name }); }
-  else connect();
+  if (state.me) { state.me.name = name; renderPeers(); send({ t: "rename", name }); return; }
+  const code = $("code-input").value.trim();
+  if (!code) { e.preventDefault(); $("code-input").focus(); return; }
+  state.code = code;
+  attempt = 0;
+  connect();
 });
-$("name-dialog").addEventListener("cancel", (e) => { if (!store.get("name")) e.preventDefault(); });
+$("name-dialog").addEventListener("cancel", (e) => { if (!state.me) e.preventDefault(); });
 
 $("invite-btn").addEventListener("click", () => {
   const link = location.origin + "/b/" + BOARD_ID;
   $("invite-link").value = link;
+  $("invite-code").value = state.code;
   $("invite-dialog").showModal();
   $("invite-link").select();
 });
 $("invite-copy").addEventListener("click", async () => {
-  const ok = await copyText($("invite-link").value);
+  const ok = await copyText(`Доска: ${$("invite-link").value}\nКод входа: ${state.code}`);
   toast(ok ? "Ссылка скопирована" : "Скопируйте ссылку вручную", ok ? "ok" : "error");
   if (ok) $("invite-dialog").close();
 });
@@ -841,7 +947,7 @@ function connect() {
   const socket = new WebSocket(`${proto}//${location.host}/api/v1/boards/${encodeURIComponent(BOARD_ID)}/ws`);
   ws = socket;
   socket.addEventListener("open", () => {
-    socket.send(JSON.stringify({ t: "hello", author: authorKey(), name: store.get("name", "Гость") || "Гость" }));
+    socket.send(JSON.stringify({ t: "hello", author: authorKey(), name: store.get("name", "Гость") || "Гость", code: state.code }));
   });
   socket.addEventListener("message", (e) => {
     let msg;
@@ -855,10 +961,16 @@ function connect() {
     cancelMine();
     for (const peer of state.peers.values()) peer.node && peer.node.remove();
     state.peers.clear();
-    state.live.clear();
     renderPeers();
     invalidate();
-    if (e.code === 4404) return showMessage("Доска не найдена", "Проверьте ссылку или создайте новую доску.");
+    if (e.code === 4404) return showMessage("Доска не найдена", "Ссылка неверна, или на доску давно не заходили и она удалена.");
+    if (e.code === 4401 || e.code === 4408) {
+      setStatus("Нужен код", "amber");
+      if (e.code === 4401) { forgetCode(BOARD_ID); state.code = ""; }
+      const wait = e.code === 4408 ? Number((e.reason || "").split(":")[1]) || 60 : 0;
+      state.me = null;
+      return askJoin(e.code === 4401 ? "Неверный код доски" : "", wait);
+    }
     if (e.code === 4403) return showMessage("Доступ запрещён", "Сервер отклонил подключение с этого адреса.");
     const delay = e.code === 4429 ? 10000 : Math.min(10000, 500 * 2 ** attempt) + Math.random() * 400;
     if (e.code === 4429) toast("На доске слишком много участников, повторим позже", "error");
@@ -883,7 +995,7 @@ function handle(msg) {
   if (!state.ready) return;   // до снимка доски события уже учтены в нём
   switch (msg.t) {
     case "join":
-      state.peers.set(msg.peer.id, { name: msg.peer.name, color: msg.peer.color, cursor: null });
+      state.peers.set(msg.peer.id, { name: msg.peer.name, color: msg.peer.color, creator: msg.peer.creator, cursor: null });
       renderPeers();
       toast(`${msg.peer.name} подключился`);
       break;
@@ -891,7 +1003,6 @@ function handle(msg) {
       const peer = state.peers.get(msg.id);
       if (peer && peer.node) peer.node.remove();
       state.peers.delete(msg.id);
-      for (const key of [...state.live.keys()]) if (key.startsWith(msg.id + ":")) state.live.delete(key);
       renderPeers();
       invalidate();
       break;
@@ -901,26 +1012,14 @@ function handle(msg) {
       if (peer) { peer.name = msg.peer.name; if (peer.node) peerCursorNode(peer); renderPeers(); }
       break;
     }
-    case "cursor": {
-      const peer = state.peers.get(msg.id);
-      if (peer) { peer.cursor = msg.x === null ? null : { x: msg.x, y: msg.y }; invalidate(); }
-      break;
-    }
-    case "draw": {
-      const key = msg.from + ":" + msg.id;
-      if (msg.replace) {
-        if (!msg.pts.length) state.live.delete(key);
-        else state.live.set(key, { id: msg.id, tool: msg.tool, color: msg.color, width: msg.width, pts: msg.pts });
-      } else {
-        const cur = state.live.get(key);
-        if (cur) cur.pts.push(...msg.pts);
-        else state.live.set(key, { id: msg.id, tool: msg.tool, color: msg.color, width: msg.width, pts: msg.pts.slice() });
+    case "cursors":
+      for (const [id, x, y] of msg.c) {
+        const peer = state.peers.get(id);
+        if (peer) peer.cursor = x === null ? null : { x, y };
       }
       invalidate();
       break;
-    }
     case "stroke":
-      state.live.delete(msg.from + ":" + msg.stroke.id);
       state.pending.delete(msg.stroke.id);
       addStroke(msg.stroke);
       invalidate();
@@ -937,11 +1036,16 @@ function handle(msg) {
       break;
     case "clear":
       clearStrokes();
-      state.live.clear();
       if (msg.from !== (state.me && state.me.id)) toast(`${msg.by} очистил доску`);
       break;
     case "chat":
       appendChat(msg.message);
+      markChanged();
+      break;
+    case "saved":
+      state.savedAt = msg.at;
+      state.unsaved = false;
+      renderSaved();
       break;
     case "import":
       applyImport(msg);
@@ -968,18 +1072,29 @@ function onInit(msg) {
   state.pending.clear();
   for (const s of msg.strokes) { state.strokes.push(s); state.index.set(s.id, s); }
   for (const s of unsent) if (!state.index.has(s.id)) { addStroke(s); state.pending.set(s.id, s); send({ t: "stroke", stroke: s }); }
-  if (firstLoad) state.history = msg.strokes.filter((s) => s.author === authorKey()).map((s) => s.id);
+  if (firstLoad) state.history = msg.strokes.filter((s) => s.by === state.me.tag).map((s) => s.id);
+  state.limits = msg.limits || {};
+  state.savedAt = msg.savedAt;
+  state.unsaved = false;
+  rememberCode(BOARD_ID, state.code);
+  if ($("name-dialog").open) $("name-dialog").close();
 
   renderChat(msg.chat || []);
 
   state.peers.clear();
   $("cursors").replaceChildren();
-  for (const p of msg.peers) state.peers.set(p.id, { name: p.name, color: p.color, cursor: null });
+  for (const p of msg.peers) state.peers.set(p.id, { name: p.name, color: p.color, creator: p.creator, cursor: null });
   state.committedDirty = true;
   renderPeers();
   syncToolbar();
   setStatus("В сети", "green");
+  renderMeters();
+  renderSaved();
   if (firstLoad) fitToContent(); else invalidate();
+  if (firstLoad && sessionStorage.getItem("doska.created") === BOARD_ID) {
+    sessionStorage.removeItem("doska.created");   // создатель сразу видит ссылку и код для приглашения
+    $("invite-btn").click();
+  }
   clearInterval(pingTimer);
   pingTimer = setInterval(() => send({ t: "ping" }), 25000); // держит соединение через прокси
 }
@@ -990,6 +1105,7 @@ function onInit(msg) {
   $("bar-actions").append(themeButton());
   fileBtn.append(icon("file"));
   $("invite-btn").prepend(icon("users"));
+  setInterval(renderSaved, 30000);
   if (store.get("chatOpen", false)) setChat(true);
   buildToolbar();
   new ResizeObserver(resize).observe(stage);
@@ -998,5 +1114,6 @@ function onInit(msg) {
   if (!/^[A-Za-z0-9_-]{16,40}$/.test(BOARD_ID)) { showMessage("Неверная ссылка", "Проверьте ссылку или создайте новую доску."); return; }
   window.addEventListener("online", () => { if (!state.ready) { attempt = 0; connect(); } });
   document.addEventListener("visibilitychange", () => { if (!document.hidden && !state.ready && !fatal) { attempt = 0; connect(); } });
-  if (store.get("name")) connect(); else askName();
+  state.code = knownCode(BOARD_ID);
+  if (store.get("name") && state.code) connect(); else askJoin();
 })();

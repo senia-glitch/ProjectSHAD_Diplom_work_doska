@@ -14,8 +14,14 @@
     <div class="board-title-box">
       <h1 class="board-title" id="board-title">Доска</h1>
       <span class="pill pill-gray" id="status" role="status" aria-live="polite">Подключение…</span>
+      <span class="saved-state" id="saved-state" data-tip-pos="bottom" hidden></span>
+    </div>
+    <div class="meter" id="board-meter" role="img" hidden>
+      <span class="meter-bar"><span class="meter-fill"></span></span>
+      <span class="meter-value" id="board-meter-value">0%</span>
     </div>
     <div class="peers" id="peers" aria-label="Участники"></div>
+    <span class="peer-count" id="peer-count" hidden></span>
     <div class="header-actions" id="bar-actions">
       <div class="menu-wrap">
         <button class="ibtn bordered" id="file-btn" type="button" aria-haspopup="menu" aria-expanded="false"
@@ -56,12 +62,14 @@
   <aside class="chat" id="chat" aria-labelledby="chat-title" hidden>
     <div class="chat-head">
       <h2 id="chat-title">Чат</h2>
+      <span class="chat-meter" id="chat-meter" data-tip-pos="bottom" hidden></span>
       <span class="grow"></span>
       <span id="chat-close-slot"></span>
     </div>
     <div class="chat-list" id="chat-list" role="log" aria-live="polite" aria-relevant="additions" tabindex="0"></div>
     <p class="chat-empty muted" id="chat-empty">Сообщений пока нет. Напишите первым.</p>
     <form class="chat-form" id="chat-form" novalidate>
+      <span class="chat-count" id="chat-count" aria-live="polite" hidden></span>
       <textarea id="chat-input" rows="1" maxlength="1000" placeholder="Сообщение… (Enter — отправить)"
                 aria-label="Сообщение" autocomplete="off"></textarea>
       <span id="chat-send-slot"></span>
@@ -71,20 +79,25 @@
 
   <dialog class="dialog" id="name-dialog" aria-labelledby="name-dialog-title">
     <form method="dialog" id="name-form">
-      <h2 id="name-dialog-title">Как вас подписать?</h2>
+      <h2 id="name-dialog-title">Вход на доску</h2>
       <p class="muted">Имя увидят другие участники рядом с вашим курсором.</p>
       <label>Имя <input type="text" id="name-input" maxlength="32" autocomplete="nickname" required></label>
-      <div class="row"><button class="btn primary" type="submit">Продолжить</button></div>
+      <label id="code-field">Код доски <span class="hint">его сообщает создатель доски</span>
+        <input type="text" id="code-input" maxlength="64" autocomplete="off" autocapitalize="characters" spellcheck="false">
+      </label>
+      <p class="error-text" id="join-error" role="alert" hidden></p>
+      <div class="row"><button class="btn primary" type="submit" id="join-submit">Войти</button></div>
     </form>
   </dialog>
 
   <dialog class="dialog" id="invite-dialog" aria-labelledby="invite-dialog-title">
     <form method="dialog">
       <h2 id="invite-dialog-title">Пригласить участников</h2>
-      <p class="muted">Любой, у кого есть эта ссылка, может смотреть и рисовать на доске.</p>
+      <p class="muted">Для входа нужны ссылка и код. Код можно передать отдельно, например в другом мессенджере.</p>
       <label>Ссылка <input type="text" id="invite-link" readonly></label>
+      <label>Код входа <input type="text" id="invite-code" class="code-value" readonly></label>
       <div class="row">
-        <button class="btn primary" type="button" id="invite-copy">Копировать</button>
+        <button class="btn primary" type="button" id="invite-copy">Копировать ссылку и код</button>
         <button class="btn ghost" value="close">Закрыть</button>
       </div>
     </form>
